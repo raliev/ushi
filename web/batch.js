@@ -1,5 +1,6 @@
-/* ushi - Batch page: the queue of YouTube videos (batch.py runs it inside server.py).
- * Add: paste links (one per line, or CSV rows url,project,auto_frames,beautify) → set up each
+/* ushi - Batch page: the queue of videos (batch.py runs it inside server.py).
+ * Add: paste links (one per line, or CSV rows url,project,auto_frames,beautify; YouTube, .m3u8,
+ * or a whole "Copy as cURL" command for a stream behind a login) → set up each
  * video → tasks. Each task: download → transcribe → beautify; a stage that failed or was
  * interrupted is "on hold" with its reason and a Restart button. */
 'use strict';
@@ -39,22 +40,24 @@ $('#themeBtn').onclick = () => {
   try { localStorage.setItem('vr-theme', t); } catch (_) { /* */ }
 };
 
-const st = { tasks: [], open: new Set(), draft: null, text: '' };
+const st = { tasks: [], open: new Set(), draft: null, text: '', rows: [] };
 
-// ── YouTube links / CSV rows ───────────────────────────────────────────────
-const YT_ID = /^[A-Za-z0-9_-]{11}$/;
-const YT_URL = /(?:youtube\.com\/(?:watch\?(?:.*&)?v=|shorts\/|live\/|embed\/|v\/)|youtu\.be\/|youtube-nocookie\.com\/embed\/)([A-Za-z0-9_-]{11})/;
-const ytId = u => (YT_ID.test(u) ? u : ((u.match(YT_URL) || [])[1] || null));
-const yes = (v, d = true) => (v == null || v === '' ? d : /^(1|yes|y|true|on|x|\+)$/i.test(v));
-const thumb = id => `https://i.ytimg.com/vi/${encodeURIComponent(id)}/mqdefault.jpg`;
+// ── Links / CSV rows / cURL commands (parsed by batch.py: /api/batch/parse) ──
 const NAME_RE = /^[A-Za-z0-9._ -]+$/;
+const host = u => { try { return new URL(u).host; } catch (_) { return ''; } };
+// YouTube has a thumbnail per id; a stream has none we could load (its CDN wants the site's Referer)
+const thumbHtml = (kind, id, cls = 'b-thumb') => (kind === 'stream'
+  ? `<div class="${cls} b-thumb-stream" title="Video stream">▶</div>`
+  : `<img class="${cls}" src="https://i.ytimg.com/vi/${encodeURIComponent(id)}/mqdefault.jpg" alt="" loading="lazy">`);
+const srcLabel = r => (r.kind === 'stream'
+  ? `${host(r.url)}${r.header_names && r.header_names.length ? ` · ${r.header_names.length} header${r.header_names.length > 1 ? 's' : ''} from cURL` : ''}`
+  : r.video_id);
 
-function parseLines(text) {
-  return text.split(/\r?\n/).map(l => l.trim()).filter(l => l && !l.startsWith('#') && !/^url\s*(,|$)/i.test(l)).map(l => {
-    const [url = '', project = '', af, bf] = l.split(',').map(x => x.trim());
-    const id = ytId(url);
-    return { url, id, project: project || id || '', auto_frames: yes(af), beautify: yes(bf) };
-  });
+let parseSeq = 0;
+async function parseText(text) {
+  const seq = ++parseSeq;
+  const rows = text.trim() ? (await api('POST', '/api/batch/parse', { text })).rows : [];
+  return seq === parseSeq ? rows : null;        // null: a newer edit is being parsed
 }
 
 // ── Add panel: step 1 (links) / step 2 (set up each video) ─────────────────
@@ -63,26 +66,38 @@ function renderAdd() {
   if (!d) {
     el.innerHTML = `
       <div class="b-step"><span class="b-num">1</span><h2>Add videos</h2></div>
-      <p class="b-help">One YouTube link per line. CSV rows work too: <span class="mono">url,project,auto_frames,beautify</span></p>
-      <textarea class="field b-urls" id="urls" rows="9" spellcheck="false" placeholder="https://www.youtube.com/watch?v=…&#10;https://youtu.be/…">${esc(st.text)}</textarea>
+      <p class="b-help">One link per line: YouTube, or a video stream (<span class="mono">.m3u8</span>). CSV rows work too: <span class="mono">url,project,auto_frames,beautify</span></p>
+      <p class="b-help">A video behind a login: open it in the browser, DevTools → Network → filter <span class="mono">m3u8</span> → right-click the request → Copy → <b>Copy as cURL (bash)</b>, and paste the whole command here. Its headers (Referer, cookies) go along with the download. Prefer <span class="mono">playlist.m3u8</span> over <span class="mono">480p/video.m3u8</span>: it has every quality, the best one is taken.</p>
+      <textarea class="field b-urls" id="urls" rows="9" spellcheck="false" placeholder="https://www.youtube.com/watch?v=…&#10;https://…/playlist.m3u8&#10;curl 'https://…/playlist.m3u8' -H 'referer: …'">${esc(st.text)}</textarea>
       <div class="b-foot"><span class="b-help" id="urlCount"></span><div class="spacer"></div>
         <button class="primary-btn" id="nextBtn">Next: set up</button></div>`;
     const ta = $('#urls');
-    const count = () => {
-      st.text = ta.value;
-      const rows = parseLines(ta.value), bad = rows.filter(r => !r.id).length;
-      $('#urlCount').innerHTML = rows.length ? `${rows.length} video${rows.length > 1 ? 's' : ''}${bad ? ` · <span class="b-bad">${bad} not a YouTube link</span>` : ''}` : '';
-      $('#nextBtn').disabled = !rows.length || bad > 0;
+    let timer = 0;
+    const show = () => {
+      const rows = st.rows, bad = rows.filter(r => r.error);
+      $('#urlCount').innerHTML = rows.length ? `${rows.length} video${rows.length > 1 ? 's' : ''}${bad.length ? ` · <span class="b-bad" title="${esc(bad.map(r => r.error).join('\n'))}">${bad.length} not usable: ${esc(bad[0].error)}</span>` : ''}` : '';
+      $('#nextBtn').disabled = !rows.length || bad.length > 0;
     };
-    ta.oninput = count; count();
+    const count = (now = false) => {
+      st.text = ta.value;
+      $('#nextBtn').disabled = true;
+      clearTimeout(timer);
+      timer = setTimeout(async () => {
+        try {
+          const rows = await parseText(ta.value);
+          if (rows) { st.rows = rows; show(); }
+        } catch (e) { fail(e); }
+      }, now ? 0 : 250);
+    };
+    ta.oninput = () => count(); count(true);
     ta.onkeydown = e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !$('#nextBtn').disabled) $('#nextBtn').click(); };
-    $('#nextBtn').onclick = () => { st.draft = parseLines(ta.value); renderAdd(); };
+    $('#nextBtn').onclick = () => { st.draft = st.rows.map(r => ({ ...r })); renderAdd(); };
     return;
   }
   const allOn = k => d.every(r => r[k]);
   el.innerHTML = `
     <div class="b-step"><span class="b-num">2</span><h2>Set up ${d.length} video${d.length > 1 ? 's' : ''}</h2></div>
-    <p class="b-help">Each video gets its own project. Name it now: the YouTube id is only a placeholder.</p>
+    <p class="b-help">Each video gets its own project. Name it now: the video id is only a placeholder.</p>
     <div class="b-cfg-head">
       <span>Video / project</span>
       <label class="switch" title="Auto frames for all"><input type="checkbox" id="allAf" ${allOn('auto_frames') ? 'checked' : ''}><span class="knob"></span>Frames</label>
@@ -90,10 +105,10 @@ function renderAdd() {
     </div>
     <div class="b-cfg">${d.map((r, i) => `
       <div class="b-cfg-row" data-i="${i}">
-        <img class="b-thumb" src="${thumb(r.id)}" alt="" loading="lazy">
+        ${thumbHtml(r.kind, r.video_id)}
         <div class="b-cfg-main">
           <input class="field b-proj" value="${esc(r.project)}" placeholder="Project name" title="Project (folder) for this video: letters, digits, spaces, . _ -">
-          <div class="b-cfg-url mono" title="${esc(r.url)}">${esc(r.id)}${projectExists(r.project) ? ' · <span class="b-note">project exists: a new session is added</span>' : ''}</div>
+          <div class="b-cfg-url mono" title="${esc(r.url)}">${esc(srcLabel(r))}${projectExists(r.project) ? ' · <span class="b-note">project exists: a new session is added</span>' : ''}</div>
         </div>
         <label class="switch" title="Auto frames: keep the frames of the video that show something new"><input type="checkbox" data-k="auto_frames" ${r.auto_frames ? 'checked' : ''}><span class="knob"></span></label>
         <label class="switch" title="Beautify: build the annotated document when the transcript is ready"><input type="checkbox" data-k="beautify" ${r.beautify ? 'checked' : ''}><span class="knob"></span></label>
@@ -116,9 +131,9 @@ function renderAdd() {
     if (bad) { toast(`Project name “${bad.project}”: use letters, digits, spaces, . _ -`, 'error'); return; }
     $('#addBtn').disabled = true;
     try {
-      await api('POST', '/api/batch/tasks', { tasks: d.map(r => ({ url: r.url, project: r.project, auto_frames: r.auto_frames, beautify: r.beautify })) });
+      await api('POST', '/api/batch/tasks', { tasks: d.map(r => ({ url: r.url, headers: r.headers, project: r.project, auto_frames: r.auto_frames, beautify: r.beautify })) });
       toast(`${d.length} task${d.length > 1 ? 's' : ''} added`, 'ok');
-      st.draft = null; st.text = '';
+      st.draft = null; st.text = ''; st.rows = [];
       renderAdd();
     } catch (e) { fail(e); $('#addBtn').disabled = false; }
   };
@@ -187,14 +202,15 @@ function taskCard(t) {
     sub ? `subtitles: ${sub.lang}${sub.auto ? ' (auto)' : ''}` : ''].filter(Boolean).join(' · ');
   const sid = t.stages.recognize.sid;
   return `<article class="b-task ${t.state}" data-id="${t.id}">
-    <a class="b-thumb-link" href="${esc(t.url)}" target="_blank" rel="noopener" title="Open on YouTube"><img class="b-thumb" src="${thumb(t.video_id)}" alt="" loading="lazy"></a>
+    ${t.kind === 'stream' ? `<div class="b-thumb-link">${thumbHtml('stream')}</div>`
+    : `<a class="b-thumb-link" href="${esc(t.url)}" target="_blank" rel="noopener" title="Open on YouTube">${thumbHtml('youtube', t.video_id)}</a>`}
     <div class="b-body">
       <div class="b-row1">
-        <div class="b-name" title="${esc(t.title || t.url)}">${esc(t.title || t.url)}</div>
+        <div class="b-name" title="${esc(t.title || t.url)}">${esc(t.title || (t.kind === 'stream' ? t.project : t.url))}</div>
         <span class="b-badge ${t.state.startsWith('waiting') ? 'waiting' : t.state}">${esc(STATE_LABEL[t.state] || t.state)}</span>
         <button class="icon-btn b-del" title="Remove from the queue (a running stage is stopped; the project and its files stay)">✕</button>
       </div>
-      <div class="b-meta"><a href="/?project=${encodeURIComponent(t.project)}${sid ? `&session=${encodeURIComponent(sid)}` : ''}" target="ushi-main" title="Open the project in the main window"><b>${esc(t.project)}</b></a> · ${esc(opts)} · <span class="mono">${esc(t.video_id)}</span></div>
+      <div class="b-meta"><a href="/?project=${encodeURIComponent(t.project)}${sid ? `&session=${encodeURIComponent(sid)}` : ''}" target="ushi-main" title="Open the project in the main window"><b>${esc(t.project)}</b></a> · ${esc(opts)} · <span class="mono" title="${esc(t.url)}">${esc(srcLabel(t))}</span></div>
       <div class="b-stages">${['download', 'recognize', 'beautify'].map(n => stagePill(t, n)).join('<span class="b-link"></span>')}</div>
       ${activity(t)}
       ${holdBox(t)}
@@ -206,7 +222,7 @@ function taskCard(t) {
 function renderList() {
   const list = $('#list'), tasks = st.tasks;
   if (!tasks.length) {
-    list.innerHTML = `<div class="empty"><h3>The queue is empty</h3><p>Add YouTube links on the left. Each video is downloaded, transcribed and (optionally) beautified in its own project.</p></div>`;
+    list.innerHTML = `<div class="empty"><h3>The queue is empty</h3><p>Add YouTube or .m3u8 links on the left. Each video is downloaded, transcribed and (optionally) beautified in its own project.</p></div>`;
   } else {
     // keep an open log scrolled to its end
     list.innerHTML = tasks.map(taskCard).join('');

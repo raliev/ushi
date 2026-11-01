@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Batch: a queue of YouTube videos, each  download (yt-dlp) → transcribe → Beautify.
+"""Batch: a queue of videos (YouTube, or HLS .m3u8 streams), each  download (yt-dlp) → transcribe → Beautify.
 
 Every task gets its own project (projects/<project>/), the video goes to its audio/ folder.
 Stages:
@@ -11,7 +11,10 @@ A failed or interrupted stage puts the task on hold (with the reason); restartin
 takes it off hold. When nothing is left to do, `run` exits.
 
 Tasks are CSV rows:  url[,project[,auto_frames[,beautify]]]   (a header row is optional;
-project defaults to the YouTube id, auto_frames / beautify to 1; 1/0, yes/no, true/false).
+project defaults to the video id, auto_frames / beautify to 1; 1/0, yes/no, true/false).
+url is a YouTube link, or a stream (.m3u8) / video file link. A whole cURL command works as
+well (the browser's DevTools → Network → the .m3u8 request → Copy as cURL): its headers
+(Referer, Cookie, ...) go along with every request, so videos behind a login download too.
 
   python batch.py run tasks.csv [--parallel 3]   # standalone; state in tasks.csv.state.json,
                                                  # running it again resumes / retries held stages
@@ -27,16 +30,19 @@ from __future__ import annotations
 import argparse
 import asyncio
 import csv
+import hashlib
 import io
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import sys
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import external
 import native_helpers
@@ -67,32 +73,177 @@ def _bool(v, default=True) -> bool:
     return str(v).strip().lower() in ("1", "yes", "y", "true", "on", "x", "+")
 
 
-def parse_rows(text: str) -> list[dict]:
-    """CSV text → task specs {url, project, auto_frames, beautify}. Skips a header and blanks."""
-    out = []
-    for row in csv.reader(io.StringIO(text)):
-        row = [c.strip() for c in row]
-        if not row or not row[0] or row[0].startswith("#"):
+# Request headers of a copied cURL that must not go along: conditional / range requests
+# (a 304 instead of the playlist), transport details, the browser's own fingerprinting.
+DROP_HEADERS = ("if-", "range", "accept-encoding", "content-length", "content-type", "host", "connection",
+                "sec-", "priority", "cache-control", "pragma", "upgrade-insecure-requests", "te")
+SECRET_HEADERS = ("cookie", "authorization", "x-csrf-token", "x-xsrf-token")
+STREAM_SUFFIXES = (".m3u8",) + VIDEO_SUFFIXES
+UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
+# curl options that take a value we don't need (the value must be skipped, not taken for the url)
+_CURL_ARG_OPTS = {"-X", "--request", "-d", "--data", "--data-raw", "--data-binary", "--data-urlencode",
+                  "-o", "--output", "-u", "--user", "-x", "--proxy", "-m", "--max-time", "--connect-timeout",
+                  "-F", "--form", "-w", "--write-out", "-r", "--range", "--retry", "-c", "--cookie-jar"}
+
+
+def parse_curl(cmd: str) -> dict:
+    """A 'Copy as cURL (bash)' command → {"url", "headers"}; raises ValueError."""
+    try:
+        args = shlex.split(cmd.replace("\\\r\n", " ").replace("\\\n", " ").rstrip().rstrip("\\"))
+    except ValueError as e:
+        raise ValueError(f"Cannot read the cURL command: {e}")
+    url, headers = "", {}
+
+    def header(name, value):
+        name = name.strip()
+        if name and not any(name.lower() == d or (d.endswith("-") and name.lower().startswith(d))
+                            for d in DROP_HEADERS):
+            headers[name] = value.strip()
+    i = 1
+    while i < len(args):
+        a, nxt = args[i], (args[i + 1] if i + 1 < len(args) else "")
+        if a in ("-H", "--header"):
+            name, _, value = nxt.partition(":")
+            header(name, value)
+            i += 2
+        elif a in ("-b", "--cookie"):
+            header("Cookie", nxt)
+            i += 2
+        elif a in ("-A", "--user-agent"):
+            header("User-Agent", nxt)
+            i += 2
+        elif a in ("-e", "--referer"):
+            header("Referer", nxt)
+            i += 2
+        elif a == "--url":
+            url = nxt
+            i += 2
+        elif a in _CURL_ARG_OPTS:
+            i += 2
+        elif a.startswith("-"):
+            i += 1                  # --compressed, -s, -L, ...
+        else:
+            url = url or a
+            i += 1
+    if not url:
+        raise ValueError("The cURL command has no URL")
+    return {"url": url, "headers": headers}
+
+
+def split_entries(text: str) -> list[str]:
+    """Pasted text → entries: a cURL command (with its \\ continuation lines) or a single line."""
+    out, cur = [], None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if cur is not None and (not stripped or re.match(r"(curl(\.exe)?\s|https?://|#)", stripped, re.I)):
+            out.append("\n".join(cur))      # a stray "\" on the command's last line
+            cur = None
+        if cur is not None:
+            cur.append(stripped)
+            if not stripped.endswith("\\"):
+                out.append("\n".join(cur))
+                cur = None
             continue
-        if row[0].lower() == "url":
+        if not stripped or stripped.startswith("#"):
+            continue
+        if re.match(r"curl(\.exe)?\s", stripped, re.I) and stripped.endswith("\\"):
+            cur = [stripped]
+        else:
+            out.append(stripped)
+    if cur:
+        out.append("\n".join(cur))
+    return out
+
+
+def parse_rows(text: str) -> list[dict]:
+    """CSV text / links / cURL commands → task specs {url, headers, project, auto_frames, beautify}.
+    Skips a header and blanks."""
+    out = []
+    for entry in split_entries(text):
+        if re.match(r"curl(\.exe)?\s", entry, re.I):
+            try:
+                out.append({**parse_curl(entry), "project": "", "auto_frames": True, "beautify": True})
+            except ValueError as e:
+                out.append({"url": entry.split()[1] if len(entry.split()) > 1 else entry, "error": str(e)})
+            continue
+        row = [c.strip() for c in next(csv.reader([entry]), [])]
+        if not row or not row[0] or row[0].lower() == "url":
             continue
         row += [""] * (4 - len(row))
         out.append({"url": row[0], "project": row[1], "auto_frames": _bool(row[2]), "beautify": _bool(row[3])})
     return out
 
 
+def stream_id(url: str) -> str:
+    """A stable id for a stream link: the video's UUID in the path (Bunny, Vimeo-like CDNs keep one
+    per video, the same for its playlist.m3u8 and 480p/video.m3u8), else a hash of the link."""
+    path = urlsplit(url).path
+    m = UUID_RE.search(path)
+    if m:
+        return m.group(0).lower()
+    return hashlib.sha1(f"{urlsplit(url).netloc}{path}".encode()).hexdigest()[:12]
+
+
 def check_spec(spec: dict) -> dict:
     """Validated task spec; raises ValueError with a readable reason."""
+    if spec.get("error"):
+        raise ValueError(spec["error"])
     url = str(spec.get("url") or "").strip()
+    headers = {str(k): str(v) for k, v in (spec.get("headers") or {}).items()}
     vid = youtube_id(url)
-    if not vid:
-        raise ValueError(f"Not a YouTube video link: {url!r}")
-    if YT_ID_RE.match(url):
-        url = f"https://www.youtube.com/watch?v={vid}"
-    project = str(spec.get("project") or "").strip() or vid
+    if vid:
+        kind = "youtube"
+        if YT_ID_RE.match(url):
+            url = f"https://www.youtube.com/watch?v={vid}"
+    else:
+        parts = urlsplit(url)
+        if parts.scheme not in ("http", "https") or not parts.netloc:
+            raise ValueError(f"Not a YouTube, .m3u8 or video link: {url!r}")
+        if not parts.path.lower().endswith(STREAM_SUFFIXES) and not headers:
+            raise ValueError(f"Not a YouTube, .m3u8 or video link: {url!r} "
+                             "(for another page, copy its video request as cURL)")
+        kind, vid = "stream", stream_id(url)
+    project = str(spec.get("project") or "").strip() or (vid if kind == "youtube" else vid[:8])
     S.safe_name(project)        # letters, digits, . _ - and spaces
-    return {"url": url, "video_id": vid, "project": project,
-            "auto_frames": bool(spec.get("auto_frames", True)), "beautify": bool(spec.get("beautify", True))}
+    out = {"url": url, "kind": kind, "video_id": vid, "project": project,
+           "auto_frames": bool(spec.get("auto_frames", True)), "beautify": bool(spec.get("beautify", True))}
+    if headers:
+        out["headers"] = headers
+    return out
+
+
+def preview_rows(text: str) -> list[dict]:
+    """parse_rows + check_spec for the Add form: every row with its id/kind, or its error.
+    Header values are kept (the form sends them back), the names are listed for display."""
+    out = []
+    for spec in parse_rows(text):
+        try:
+            c = check_spec(spec)
+            out.append({**c, "header_names": list(c.get("headers", {}))})
+        except ValueError as e:
+            out.append({"url": spec.get("url", ""), "error": str(e)})
+    return out
+
+
+def header_args(task: dict) -> list[str]:
+    return [a for k, v in (task.get("headers") or {}).items() for a in ("--add-header", f"{k}:{v}")]
+
+
+def masked(cmd: list[str]) -> str:
+    """A command line for the log, without cookies / tokens."""
+    out = []
+    for a in cmd:
+        name, sep, _ = a.partition(":")
+        out.append(shlex.quote(f"{name}: …" if sep and name.lower() in SECRET_HEADERS else a))
+    return " ".join(out)
+
+
+def public_task(task: dict) -> dict:
+    """A task for the UI / API: header names only, never their values."""
+    out = {k: v for k, v in task.items() if k != "headers"}
+    if task.get("headers"):
+        out["header_names"] = list(task["headers"])
+    return out
 
 
 def new_task(spec: dict) -> dict:
@@ -371,16 +522,20 @@ class Orchestrator:
                 # H.264 + AAC up to 1080p: plays in every browser; the frames come from it
                 # only formats with real video and audio: when YouTube hands out nothing else,
                 # yt-dlp would otherwise "download" the storyboard (preview images, .mhtml)
-                "-f", "bv*[height<=1080]+ba/b[height<=1080][vcodec!=none][acodec!=none]/b[vcodec!=none][acodec!=none]",
+                "-f", "bv*[height<=1080]+ba/b[height<=1080][vcodec!=none][acodec!=none]/b[vcodec!=none][acodec!=none]"
+                if task.get("kind", "youtube") == "youtube" else
+                # a stream's variant playlist (480p/video.m3u8) says nothing about its codecs or size
+                "bv*[height<=1080]+ba/b[height<=1080]/bv*+ba/b",
                 "-S", "vcodec:h264,acodec:aac",
                 "--merge-output-format", "mp4",
-                "-o", str(pdir / "audio" / "%(id)s.%(ext)s"),
-                "--write-info-json", "-o", f"infojson:{meta_dir / '%(id)s'}"]
+                # named by our id: a stream's own id from yt-dlp is just "playlist" / "video"
+                "-o", str(pdir / "audio" / f"{vid}.%(ext)s"),
+                "--write-info-json", "-o", f"infojson:{meta_dir / vid}", *header_args(task)]
         ffmpeg = native_helpers.ffmpeg_exe()
         if ffmpeg:
             opts += ["--ffmpeg-location", ffmpeg]
         cmd += [*opts, task["url"]]
-        self.log(task, "download", "$ " + " ".join(cmd))
+        self.log(task, "download", "$ " + masked(cmd))
         log: list[str] = s.setdefault("log", [])
         log.clear()
         log.append(f"yt-dlp {info['version']} ({' '.join(info['cmd'])})"
@@ -409,12 +564,18 @@ class Orchestrator:
             junk.unlink(missing_ok=True)
         if rc != 0:
             error = (errors[-1] if errors else "\n".join(log[-5:])) or f"yt-dlp exited with {rc}"
-            if any("Only images are available" in l or "Precondition check failed" in l for l in log) \
-                    or "Requested format is not available" in error:
+            if task.get("kind", "youtube") == "youtube" and (
+                    any("Only images are available" in l or "Precondition check failed" in l for l in log)
+                    or "Requested format is not available" in error):
                 error = ("YouTube gave yt-dlp no video or audio for this video (its player requests were refused: "
                          "\"Precondition check failed\", HTTP 400). This is often temporary: restart the download. "
                          "If it keeps failing, update yt-dlp (yt-dlp -U, or pip install -U yt-dlp) and install a "
                          "JavaScript runtime it can use (brew install deno).\n\n" + error)
+            elif task.get("kind") == "stream" and re.search(r"HTTP Error (401|403)|Forbidden|Unauthorized", "\n".join(log)):
+                error = ("The server refused the stream (401/403). Streams behind a login need the request's "
+                         "headers: open the video in the browser, DevTools → Network → the .m3u8 request → "
+                         "Copy as cURL, remove this task and add the cURL command instead. Copied headers expire "
+                         "after a while (a new login, a signed link), so copy a fresh one.\n\n" + error)
             s.update(status="hold", error=error)
             return
         files = [p for p in (pdir / "audio").glob(f"{vid}.*")
@@ -426,7 +587,10 @@ class Orchestrator:
         meta = {}
         try:
             meta = json.loads((meta_dir / f"{vid}.info.json").read_text(encoding="utf-8"))
-            task["title"] = meta.get("title") or ""
+            title = meta.get("title") or ""
+            # the generic extractor names a stream after its file: "playlist", "video"
+            task["title"] = "" if task.get("kind") == "stream" and title.lower() in (
+                "playlist", "video", "index", "master", vid) else title
             s["duration"] = meta.get("duration")
         except Exception:
             pass
@@ -450,7 +614,7 @@ class Orchestrator:
             old_vtt.unlink(missing_ok=True)
         cmd = [*ytdlp, "--skip-download", "--no-playlist", "--no-colors",
                "--write-auto-subs" if auto else "--write-subs", "--sub-langs", lang, "--sub-format", "vtt",
-               "-o", f"subtitle:{meta_dir / '%(id)s'}", task["url"]]
+               "-o", f"subtitle:{meta_dir / task['video_id']}", *header_args(task), task["url"]]
         proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE,
                                                     stderr=asyncio.subprocess.STDOUT, env=native_helpers.child_env())
         out = (await proc.communicate())[0].decode("utf-8", "replace")
@@ -463,8 +627,8 @@ class Orchestrator:
         try:
             text = external.from_youtube_vtt(data.decode("utf-8-sig", errors="replace"))
             rec = await asyncio.to_thread(
-                external.add, project, f"YouTube subtitles {task['video_id']} {lang}.vtt", data, None,
-                text, "youtube-auto" if auto else "youtube")
+                external.add, project, f"{'YouTube s' if task.get('kind', 'youtube') == 'youtube' else 'S'}ubtitles "
+                f"{task['video_id']} {lang}.vtt", data, None, text, "youtube-auto" if auto else "youtube")
         except ValueError as e:
             log.append(f"Subtitles ({lang}) skipped: {e}")
             return

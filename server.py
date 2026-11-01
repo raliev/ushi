@@ -766,7 +766,7 @@ class BeautifyJobs:
 jobs = BeautifyJobs()
 
 
-# ── Batch queue (batch.py): YouTube → download → transcribe → Beautify ──────
+# ── Batch queue (batch.py): YouTube / HLS → download → transcribe → Beautify ──────
 
 class ServerRunner:
     """Batch stages through the recorder and the Beautify jobs, so they show in the main UI."""
@@ -849,7 +849,7 @@ class ServerRunner:
 
 
 def _batch_public(task: dict, log_lines: int = 40) -> dict:
-    out = {**task, "state": batch.task_state(task), "stages": {}}
+    out = {**batch.public_task(task), "state": batch.task_state(task), "stages": {}}
     for name, s in task["stages"].items():
         out["stages"][name] = {**s, "log": (s.get("log") or [])[-log_lines:]} if "log" in s else dict(s)
     return out
@@ -1662,6 +1662,12 @@ async def batch_page():
 async def batch_list():
     return {"tasks": [_batch_public(t) for t in batch_queue.tasks], "parallel": batch_orch.parallel,
             "ytdlp": await asyncio.to_thread(batch.ytdlp_info), "ytdlp_stale_days": batch.YTDLP_STALE_DAYS}
+
+
+@app.post("/api/batch/parse")
+async def batch_parse(data: dict = Body(...)):
+    """The Add form's text (links, CSV rows, cURL commands) → rows, each with its id or error."""
+    return {"rows": batch.preview_rows(str(data.get("text") or ""))}
 
 
 @app.post("/api/batch/tasks")

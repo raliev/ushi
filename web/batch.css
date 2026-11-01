@@ -58,6 +58,8 @@ body.batch-page { min-height: 100vh; height: auto; overflow: auto; display: flex
 .b-task.done { opacity: .82; }
 .b-thumb { width: 160px; height: 90px; object-fit: cover; border-radius: 9px; background: var(--panel-2); display: block; }
 .b-thumb-link { align-self: start; }
+.b-thumb-stream { display: grid; place-items: center; color: var(--muted, #888); font-size: 22px; user-select: none; }
+.b-cfg-row .b-thumb-stream { font-size: 14px; }
 .b-body { min-width: 0; display: flex; flex-direction: column; gap: 8px; }
 .b-row1 { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .b-name { flex: 1; min-width: 0; font-weight: 620; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
