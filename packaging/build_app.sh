@@ -10,8 +10,13 @@
 #
 # Signing: with a "Developer ID Application" certificate in the keychain the app is
 # signed with it (and notarized when APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD and
-# APPLE_TEAM_ID are set). Without one it is signed ad hoc: it runs on any Apple
-# Silicon Mac, but the first launch needs right-click → Open (see README).
+# APPLE_TEAM_ID are set). Otherwise with a self-signed code signing certificate
+# (MAC_SIGN_IDENTITY, default "ushi signing"; Keychain Access → Certificate Assistant →
+# Create a Certificate → Code Signing; it doesn't have to be trusted): the first launch
+# needs Open Anyway as with ad hoc, but every build carries the same identity, so
+# macOS keeps the Screen Recording / Microphone permissions across updates. Keep its
+# .p12 backup: a new certificate means asking for the permissions once more.
+# Without either it is signed ad hoc: permissions are lost on every new version.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 MODELS="${MODELS:-all}"
@@ -66,9 +71,16 @@ EXTRA=()
 if security find-identity -v -p codesigning 2>/dev/null | grep -q "Developer ID Application"; then
   echo "Signing with Developer ID"
 else
-  echo "No Developer ID certificate: ad-hoc signing"
+  # signed in app/build/after-pack.js with codesign (electron-builder only takes trusted certificates)
   export VOICE_REC_ADHOC=1
   EXTRA+=(-c.mac.identity=null)
+  SIGN_ID="${MAC_SIGN_IDENTITY-ushi signing}"
+  if [[ -n "$SIGN_ID" ]] && security find-identity -p codesigning 2>/dev/null | grep -qF "\"$SIGN_ID\""; then
+    echo "Signing with \"$SIGN_ID\" (self-signed)"
+    export VOICE_REC_SIGN_IDENTITY="$SIGN_ID"
+  else
+    echo "No Developer ID or \"${SIGN_ID:-self-signed}\" certificate: ad-hoc signing (permissions reset on every update)"
+  fi
 fi
 SUFFIX=""
 [[ "$MODELS" != all ]] && SUFFIX="-$MODELS-models"

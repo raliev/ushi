@@ -22,7 +22,7 @@ The easiest way is the app: the web UI in its own window, with Python and all de
 
 - **Models** are not inside: each one is downloaded on first use, with progress on screen; after that everything works offline.
 - **AI for Beautify and chat**: on first launch the app asks what to use -- [Claude Code](https://claude.com/claude-code) or an LLM API (Gemini, OpenAI, Anthropic, OpenRouter or any OpenAI-compatible server (DeepSeek, ...), including local Ollama and LM Studio). Recognition is always local.
-- **The builds aren't signed.** macOS: open the app the first time via right-click → **Open** (macOS 15+: System Settings → Privacy & Security → **Open Anyway**), or run `xattr -cr /Applications/ushi.app`. Windows: SmartScreen says "Windows protected your PC" -- **More info** → **Run anyway**.
+- **The builds aren't notarized / code-signed by Apple or Microsoft.** macOS (from 1.4.1 every version is signed with the same certificate, so permissions granted once survive updates): open the app the first time via right-click → **Open** (macOS 15+: System Settings → Privacy & Security → **Open Anyway**), or run `xattr -cr /Applications/ushi.app`. Windows: SmartScreen says "Windows protected your PC" -- **More info** → **Run anyway**.
 - **Permissions** (macOS): Microphone, Screen Recording (screenshots), Accessibility (selected text capture) and, for an app's audio, System Audio Recording. **Help** in the app has shortcuts to these settings.
 
 To run from source instead, see [Setup](#setup); to build the app yourself, [macOS app](#macos-app) and [Windows](#windows).
@@ -39,7 +39,7 @@ To run from source instead, see [Setup](#setup); to build the app yourself, [mac
 - Microphone (it also hears the speakers -- YouTube, a call on speakers).
 - One app's audio, e.g. Teams, Zoom, Meet in a browser -- alone or **app + mic** as `[Them]` / `[Me]` lines (Core Audio process taps on macOS 14.2+, WASAPI process loopback on Windows). Works with headphones.
 - Audio and video files: real-time with a player, or in the background as fast as recognition goes; a start/end range; frames taken straight from the video.
-- **Batch**: a queue of YouTube links → download (yt-dlp, subtitles as a second source) → transcribe → Beautify, each in its own project.
+- **Batch**: a queue of YouTube links or video streams (`.m3u8`, or a pasted *Copy as cURL* for a video behind a login) → download (yt-dlp, subtitles as a second source) → transcribe → Beautify, each in its own project.
 
 **Screen.**
 - Global hotkeys: `Ctrl+Shift+S` -- screenshot + OCR ([EasyOCR](https://github.com/JaidedAI/EasyOCR)), `Ctrl+Shift+W` -- paste the selected text into the transcript verbatim.
@@ -214,10 +214,11 @@ python main.py myproject 60 --source file:talk.mp4 --start 1:00 --end 3:00 --aut
 python main.py myproject 60 --source file:talk.mp4 --start 1:00 --realtime --play
 ```
 
-Batch: a queue of YouTube videos, each downloaded (yt-dlp, 3 at once), transcribed (one at a time, in the order the downloads finish) and optionally beautified (one at a time), each in its own project. The video's default subtitles (author-uploaded, else YouTube's captions in the original language) go into the project's external transcripts (Notes), bound to the session, and Beautify uses them. A failed or interrupted stage puts its task on hold with the reason; restarting it continues an interrupted transcription where it stopped. The web UI has it under **Batch** (`/batch`); from the console:
+Batch: a queue of videos, each downloaded (yt-dlp, 3 at once), transcribed (one at a time, in the order the downloads finish) and optionally beautified (one at a time), each in its own project. The video's default subtitles (author-uploaded, else YouTube's captions in the original language) go into the project's external transcripts (Notes), bound to the session, and Beautify uses them. A failed or interrupted stage puts its task on hold with the reason; restarting it continues an interrupted transcription where it stopped. Besides YouTube links it takes HLS streams (`.m3u8`) and direct video file links. For a video that plays only after logging in to a site, open it in the browser, DevTools → Network → filter `m3u8` → right-click the request → Copy → **Copy as cURL (bash)**, and paste the whole command: its headers (Referer, cookies, Authorization) go along with every request of the download. Prefer the master `playlist.m3u8` (every quality; the best up to 1080p is taken) over a `480p/video.m3u8` variant. Copied sessions expire: a 401/403 means copying a fresh cURL. Header values stay on the server (the UI shows their names only, the log hides cookies and tokens). The web UI has it under **Batch** (`/batch`); from the console:
 
 ```bash
-# tasks.csv: url[,project[,auto_frames[,beautify]]]  (header optional; project = YouTube id, flags = 1 by default)
+# tasks.csv: url[,project[,auto_frames[,beautify]]]  (header optional; project = video id, flags = 1 by default)
+#            url: YouTube, .m3u8 or video file link; a whole cURL command (with its \ lines) works too
 python batch.py run tasks.csv [--parallel 3]   # standalone; state in tasks.csv.state.json - run again to resume
 python batch.py submit tasks.csv               # into the running web UI's queue
 python batch.py list                           # the web UI's queue
@@ -305,7 +306,7 @@ The steps are separate scripts: `packaging/build_python.sh` (relocatable [python
 
 How it runs: the app starts the bundled `server.py` on a free local port and opens it in a window. Data lives in `~/Library/Application Support/ushi/data` (`…/Voice Rec/data` for an install from before the rename; `projects/`, `.webui/`, `logs/server.log`); **File → Change Data Folder…** points it elsewhere, e.g. at this repo to reuse its projects. On first launch the bundled models are copied into `data/models` (an APFS clone: instant and no extra disk space when the app is in /Applications), so the libraries see a normal writable cache. Beautify and chat use [Claude Code](https://claude.com/claude-code) when it is installed (`claude` is looked up in the login shell's `PATH`), or an LLM API: Gemini, OpenAI, Anthropic, OpenRouter or any OpenAI-compatible host (Ollama, LM Studio, vLLM) -- chosen on first launch or in **Settings → AI** (`llm_api.py`; keys are kept in `.webui/secrets.json`, mode 600, or taken from `GEMINI_API_KEY`, `OPENAI_API_KEY`, ...). Code paths: `VOICE_REC_DATA` (data folder), `VOICE_REC_SILERO_DIR`, `VOICE_REC_RECORDER_PYTHON`; without them the console tools and `server.py` behave exactly as before.
 
-Signing: with a "Developer ID Application" certificate in the keychain the build is signed with it, and notarized when `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD` and `APPLE_TEAM_ID` are set -- then it opens on any Mac with no warnings. Without one the app is signed ad hoc: on another Mac the first launch is blocked as from an unidentified developer -- open it once via right-click → **Open** (macOS 15+: System Settings → Privacy & Security → **Open Anyway**), or run `xattr -cr "/Applications/ushi.app"`. macOS then asks for Microphone, Screen Recording (first screenshot) and Accessibility (selection capture) permissions; **Help** has shortcuts to these settings.
+Signing: with a "Developer ID Application" certificate in the keychain the build is signed with it, and notarized when `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD` and `APPLE_TEAM_ID` are set -- then it opens on any Mac with no warnings. Otherwise it is signed with a self-signed code signing certificate if the keychain has one (`MAC_SIGN_IDENTITY`, default `ushi signing`; Keychain Access → Certificate Assistant → Create a Certificate → type *Code Signing*; it does not have to be trusted). Every build then carries the same identity, so macOS keeps the Microphone / Screen Recording permissions when the app is updated; keep a `.p12` backup of the certificate, a new one means granting them once more. Without any certificate the app is signed ad hoc and the permissions are asked for again after every update. Either way, without a Developer ID, on another Mac the first launch is blocked as from an unidentified developer -- open it once via right-click → **Open** (macOS 15+: System Settings → Privacy & Security → **Open Anyway**), or run `xattr -cr "/Applications/ushi.app"`. macOS then asks for Microphone, Screen Recording (first screenshot) and Accessibility (selection capture) permissions; **Help** has shortcuts to these settings.
 
 ### Re-diarization
 
@@ -473,7 +474,7 @@ Key constants in `main.py`:
 | `beautify.py` | Full annotated transcript via Claude Code or an LLM API (also a console tool) |
 | `image_notes.py` | Screen notes for Beautify: OCR / vision descriptions (Describe) of images, condensed |
 | `media_file.py` | Audio/video files as a source: probing, time range, frames from the video |
-| `batch.py` | YouTube batch queue: download → transcribe → Beautify (also a console tool) |
+| `batch.py` | Batch queue (YouTube, `.m3u8`, cURL): download → transcribe → Beautify (also a console tool) |
 | `llm_api.py` | Beautify / chat through an LLM API (OpenAI-compatible protocol), provider settings and keys |
 | `downloads.py` | Progress of models downloaded on first use |
 | `claude_cli.py` | Helpers for headless `claude -p` (stream-json parsing, progress labels) |
