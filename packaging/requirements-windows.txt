@@ -21,6 +21,9 @@ fastapi>=0.162
 uvicorn[standard]>=0.54
 python-multipart>=0.0.32
 openai>=3.0
+# YouTube / stream downloads (batch.py): [default] brings yt-dlp-ejs (YouTube's challenge solver),
+# [deno] the JavaScript runtime it runs in (in this Python's scripts folder, where yt-dlp looks)
+yt-dlp[default,deno]>=2026.10.21
 imageio-ffmpeg>=0.6.0
 jiwer>=4.0
 # Windows helpers: screenshots (screenshot_helper_win.py), system audio (audio_helper_win.py)

@@ -39,6 +39,7 @@ import shlex
 import shutil
 import signal
 import sys
+import sysconfig
 import time
 import uuid
 from pathlib import Path
@@ -276,7 +277,28 @@ def task_state(task: dict) -> str:
 
 
 YTDLP_STALE_DAYS = 60       # YouTube changes often: an older yt-dlp tends to stop working
+# How to install / update yt-dlp and deno (the JavaScript runtime yt-dlp needs for YouTube) here.
+# The apps bundle both (pip yt-dlp[default,deno]); a newer yt-dlp installed this way wins over
+# theirs, so the update hint is an install (winget and brew upgrade what is already there).
+if native_helpers.IS_WINDOWS:
+    HINTS = {"ytdlp": "winget install yt-dlp.yt-dlp", "ytdlp_update": "winget install yt-dlp.yt-dlp",
+             "deno": "winget install DenoLand.Deno"}
+elif native_helpers.IS_MAC:
+    HINTS = {"ytdlp": "brew install yt-dlp", "ytdlp_update": "brew install yt-dlp", "deno": "brew install deno"}
+else:
+    HINTS = {"ytdlp": "pip install yt-dlp", "ytdlp_update": "pip install -U yt-dlp",
+             "deno": "curl -fsSL https://deno.land/install.sh | sh"}
 _ytdlp_found: tuple[float, dict | None] = (0.0, None)
+
+
+def ytdlp_env() -> dict:
+    """Environment for yt-dlp: this Python's scripts folder on PATH, where pip puts deno.
+    yt-dlp run as `python -m yt_dlp` looks there itself; a standalone yt-dlp.exe does not."""
+    env = native_helpers.child_env()
+    scripts = sysconfig.get_path("scripts")
+    if scripts and Path(scripts).is_dir():
+        env["PATH"] = scripts + os.pathsep + env.get("PATH", "")
+    return env
 
 
 def _ytdlp_candidates() -> list[list[str]]:
@@ -335,6 +357,7 @@ def ytdlp_info(refresh: bool = False) -> dict | None:
     except ValueError:
         age = None
     info = {"cmd": cmd, "version": version, "age_days": age,
+            "deno": bool(shutil.which("deno", path=ytdlp_env()["PATH"])),
             "others": [f"{' '.join(c)} ({v})" for v, c in found[1:]]}
     _ytdlp_found = (time.time(), info)
     return info
@@ -511,7 +534,7 @@ class Orchestrator:
         info = await asyncio.to_thread(ytdlp_info)
         cmd = list(info["cmd"]) if info else None
         if not cmd:
-            s.update(status="hold", error="yt-dlp is not installed: pip install yt-dlp (or brew install yt-dlp)")
+            s.update(status="hold", error=f"yt-dlp is not installed: {HINTS['ytdlp']}")
             return
         pdir = S.project_dir(task["project"])
         for sub in ("transcripts", "screenshots", "docs", "audio"):
@@ -542,7 +565,7 @@ class Orchestrator:
                    + (f" - {info['age_days']} days old, consider updating it" if (info["age_days"] or 0) > YTDLP_STALE_DAYS else ""))
         self.log(task, "download", log[-1])
         proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE,
-                                                    stderr=asyncio.subprocess.STDOUT, env=native_helpers.child_env())
+                                                    stderr=asyncio.subprocess.STDOUT, env=ytdlp_env())
         errors = []
         try:
             async for raw in proc.stdout:
@@ -569,8 +592,8 @@ class Orchestrator:
                     or "Requested format is not available" in error):
                 error = ("YouTube gave yt-dlp no video or audio for this video (its player requests were refused: "
                          "\"Precondition check failed\", HTTP 400). This is often temporary: restart the download. "
-                         "If it keeps failing, update yt-dlp (yt-dlp -U, or pip install -U yt-dlp) and install a "
-                         "JavaScript runtime it can use (brew install deno).\n\n" + error)
+                         f"If it keeps failing, update yt-dlp ({HINTS['ytdlp_update']}) and install a "
+                         f"JavaScript runtime it can use ({HINTS['deno']}).\n\n" + error)
             elif task.get("kind") == "stream" and re.search(r"HTTP Error (401|403)|Forbidden|Unauthorized", "\n".join(log)):
                 error = ("The server refused the stream (401/403). Streams behind a login need the request's "
                          "headers: open the video in the browser, DevTools → Network → the .m3u8 request → "
@@ -616,7 +639,7 @@ class Orchestrator:
                "--write-auto-subs" if auto else "--write-subs", "--sub-langs", lang, "--sub-format", "vtt",
                "-o", f"subtitle:{meta_dir / task['video_id']}", *header_args(task), task["url"]]
         proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE,
-                                                    stderr=asyncio.subprocess.STDOUT, env=native_helpers.child_env())
+                                                    stderr=asyncio.subprocess.STDOUT, env=ytdlp_env())
         out = (await proc.communicate())[0].decode("utf-8", "replace")
         vtt = next(iter(meta_dir.glob(f"{task['video_id']}.*.vtt")), None)
         if proc.returncode != 0 or not vtt:

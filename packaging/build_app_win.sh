@@ -43,12 +43,15 @@ if [[ "${REBUILD_PYTHON:-0}" == 1 || ! -x $PY ]]; then
   cp "$(ls "$SP"/imageio_ffmpeg/binaries/ffmpeg-*.exe | head -1)" "$PYDIR/extra-bin/ffmpeg.exe"
   "$PY" -m compileall -q -j 0 "$SP" >/dev/null || true
 fi
+# yt-dlp changes every few weeks: bring a cached runtime up to the version required too
+uv pip install --python "$PY" --link-mode copy "$(grep -E '^yt-dlp' packaging/requirements-windows.txt)"
 if [[ "$GPU" == 1 ]]; then
   uv pip install --python "$PY" --link-mode copy -r packaging/requirements-windows-cuda.txt
 else
   uv pip uninstall --python "$PY" nvidia-cublas-cu12 nvidia-cudnn-cu12 nvidia-cuda-nvrtc-cu12 2>/dev/null || true
 fi
-"$PY" -c "import faster_whisper, onnx_asr, sounddevice, soundcard, mss, comtypes, pycaw, easyocr, torch, speechbrain, transformers, fastapi, uvicorn, cv2, tkinter, silero_vad; print('python ok:', torch.__version__)"
+"$PY" -c "import faster_whisper, onnx_asr, sounddevice, soundcard, mss, comtypes, pycaw, easyocr, torch, speechbrain, transformers, fastapi, uvicorn, cv2, tkinter, silero_vad, yt_dlp; print('python ok:', torch.__version__)"
+[[ -f "$PYDIR/Scripts/deno.exe" ]] || { echo "deno.exe is missing (yt-dlp[deno])" >&2; exit 1; }
 rm -rf build/app-python
 cp -R "$PYDIR" build/app-python
 

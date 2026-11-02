@@ -24,5 +24,8 @@ python-multipart==0.0.20
 # Beautify with the "api" engine (process_transcript2.py)
 google-genai==1.29.0
 openai==1.99.2
+# YouTube / stream downloads (batch.py): [default] brings yt-dlp-ejs (YouTube's challenge solver),
+# [deno] the JavaScript runtime it runs in (in this Python's scripts folder, where yt-dlp looks)
+yt-dlp[default,deno]==2026.10.21
 # MP3 export: a static ffmpeg binary (main.py finds it via PATH, see app/main.js)
 imageio-ffmpeg==0.6.0

@@ -57,5 +57,5 @@ cp "$FF" "$OUT/extra-bin/ffmpeg"
 chmod +x "$OUT/extra-bin/ffmpeg"
 
 ${RUN[@]+"${RUN[@]}"} "$OUT/bin/python3" -m compileall -q -j 0 "$SP" >/dev/null || true
-${RUN[@]+"${RUN[@]}"} "$OUT/bin/python3" -c "import faster_whisper, onnx_asr, sounddevice, easyocr, torch, speechbrain, transformers, fastapi, uvicorn, cv2; print('python ok:', torch.__version__)"
+${RUN[@]+"${RUN[@]}"} "$OUT/bin/python3" -c "import faster_whisper, onnx_asr, sounddevice, easyocr, torch, speechbrain, transformers, fastapi, uvicorn, cv2, yt_dlp; print('python ok:', torch.__version__)"
 du -sh "$OUT"

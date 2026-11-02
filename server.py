@@ -1661,7 +1661,8 @@ async def batch_page():
 @app.get("/api/batch")
 async def batch_list():
     return {"tasks": [_batch_public(t) for t in batch_queue.tasks], "parallel": batch_orch.parallel,
-            "ytdlp": await asyncio.to_thread(batch.ytdlp_info), "ytdlp_stale_days": batch.YTDLP_STALE_DAYS}
+            "ytdlp": await asyncio.to_thread(batch.ytdlp_info), "ytdlp_stale_days": batch.YTDLP_STALE_DAYS,
+            "hints": batch.HINTS}
 
 
 @app.post("/api/batch/parse")

@@ -318,10 +318,12 @@ async function load() {
     const d = await api('GET', '/api/batch');
     st.tasks = d.tasks;
     $('#parInp').value = d.parallel;
-    const y = d.ytdlp, warn = $('#ytdlpWarn');
-    if (!y) warn.innerHTML = 'yt-dlp is not installed, downloads will be put on hold: <span class="mono">pip install yt-dlp</span> or <span class="mono">brew install yt-dlp</span>';
-    else if (y.age_days > d.ytdlp_stale_days) warn.innerHTML = `yt-dlp ${esc(y.version)} is ${y.age_days} days old; YouTube often stops answering old versions. Update it: <span class="mono">${esc(y.cmd.join(' '))} -U</span> (or <span class="mono">pip install -U yt-dlp</span>)`;
-    warn.classList.toggle('hidden', !!y && !(y.age_days > d.ytdlp_stale_days));
+    const y = d.ytdlp, h = d.hints, warn = $('#ytdlpWarn');
+    const stale = y && y.age_days > d.ytdlp_stale_days;
+    if (!y) warn.innerHTML = `yt-dlp is not installed, downloads will be put on hold: <span class="mono">${esc(h.ytdlp)}</span>`;
+    else if (stale) warn.innerHTML = `yt-dlp ${esc(y.version)} is ${y.age_days} days old; YouTube often stops answering old versions. Update it: <span class="mono">${esc(h.ytdlp_update)}</span>`;
+    else if (!y.deno) warn.innerHTML = `YouTube downloads need a JavaScript runtime for yt-dlp and none was found: <span class="mono">${esc(h.deno)}</span> (then restart the app)`;
+    warn.classList.toggle('hidden', !!y && !stale && y.deno);
     renderList();
   } catch (e) { fail(e); }
 }
