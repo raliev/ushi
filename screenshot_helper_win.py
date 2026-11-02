@@ -21,8 +21,9 @@ Capture config (JSON), coordinates in physical pixels of the virtual screen:
   {"mode": "window", "windowId": <HWND>, "owner": "Google Chrome", "title": "..."}
   Optional "frames_crop": {"x":..,"y":..,"w":..,"h":..} in fractions of the captured image.
 
-A window is captured with PrintWindow(PW_RENDERFULLCONTENT), so it works while other
-windows cover it (not while it is minimized). Needs: mss, pillow; tkinter for the
+A window nothing covers is grabbed from the screen; a covered one is rendered with
+PrintWindow(PW_RENDERFULLCONTENT), which works behind other windows (not while minimized)
+but leaves hardware-decoded video (YouTube in a browser) blank. Needs: mss, pillow; tkinter for the
 overlays and the capture flash.
 """
 
@@ -231,6 +232,29 @@ def visible_windows() -> list[int]:
     return found
 
 
+def covered(hwnd) -> bool:
+    """Whether a visible window above this one in the z-order overlaps it."""
+    tx, ty, tw, th = frame_rect(hwnd)
+    me, hit = os.getpid(), [False]
+
+    def cb(h, _):
+        if h == hwnd:
+            return False                     # reached the target: everything above is checked
+        if not user32.IsWindowVisible(h) or user32.IsIconic(h) or _cloaked(h) or _pid(h) == me:
+            return True
+        ex = user32.GetWindowLongW(h, GWL_EXSTYLE)
+        if ex & WS_EX_TRANSPARENT and ex & WS_EX_LAYERED:
+            return True                      # click-through overlays draw (almost) nothing
+        x, y, w, h_ = frame_rect(h)
+        if w > 0 and h_ > 0 and x < tx + tw and tx < x + w and y < ty + th and ty < y + h_:
+            hit[0] = True
+            return False
+        return True
+
+    user32.EnumWindows(WNDENUMPROC(cb), 0)
+    return hit[0]
+
+
 def window_json(hwnd) -> dict:
     x, y, w, h = frame_rect(hwnd)
     return {"windowId": int(hwnd), "owner": owner_name(hwnd), "title": _window_text(hwnd),
@@ -317,7 +341,11 @@ def capture_image(cfg: dict) -> tuple[Image.Image, tuple[int, int, int, int]]:
         hwnd = resolve_window(cfg)
         if hwnd:
             rect = frame_rect(hwnd)
-            img = print_window(hwnd)
+            # The screen has everything DWM composed, video overlays included; PrintWindow
+            # only what the app redraws for it, so it's for windows that are covered.
+            img = grab(*rect) if rect[2] > 0 and rect[3] > 0 and not covered(hwnd) else None
+            if img is None:
+                img = print_window(hwnd)
             # Some GPU-composed content renders black through PrintWindow; the window's
             # on-screen pixels are the next best thing when it isn't covered.
             if img is None or img.convert("L").getextrema()[1] < 8:

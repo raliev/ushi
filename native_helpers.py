@@ -132,7 +132,9 @@ def reveal(path: Path):
     if IS_MAC:
         subprocess.Popen(["open", "-R", str(path)])
     elif IS_WINDOWS:
-        # explorer.exe takes "/select,<path>" as one argument; its exit code is meaningless
-        subprocess.Popen(["explorer", f"/select,{path}"])
+        # explorer.exe parses its command line itself: it wants /select,"<path>" with only the
+        # path quoted. A list argument gets quoted whole ("/select,C:\a b\c") when the path
+        # has spaces, and explorer then ignores it and opens Documents. Its exit code is meaningless.
+        subprocess.Popen(f'explorer /select,"{path}"')
     else:
         subprocess.Popen(["xdg-open", str(path.parent if path.is_file() else path)])
