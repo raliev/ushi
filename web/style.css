@@ -93,6 +93,10 @@ button { cursor: pointer; background: none; border: 0; padding: 0; }
 .crumb-value { font-weight: 560; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 260px; }
 .crumb .chev { width: 12px; height: 12px; fill: none; stroke: var(--faint); stroke-width: 1.8; align-self: center; }
 .crumb-sep { color: var(--line-strong); }
+.crumb-edit { width: 26px; height: 26px; border-radius: 7px; margin-left: -2px; }
+.crumb-edit .ico { width: 14px; height: 14px; }
+a.mi { color: inherit; text-decoration: none; }
+.menu .mi .tick .ico { width: 13px; height: 13px; vertical-align: -2px; }
 .top-actions { display: flex; align-items: center; gap: 6px; }
 .capture-btn {
   display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 12px 0 10px; border-radius: 9px;
@@ -340,7 +344,7 @@ select.field { padding-right: 26px; appearance: none; background-image: url("dat
 .shots .empty { padding: 30px 20px; }
 
 /* ── Chat ─────────────────────────────────────────────────────────────────── */
-.chat-log { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+.chat-log { flex: 1; overflow-y: auto; overflow-anchor: none; padding: 14px; display: flex; flex-direction: column; gap: 12px; }
 .msg { max-width: 100%; }
 .msg.user { align-self: flex-end; max-width: 86%; background: var(--ink); color: var(--panel); padding: 8px 12px; border-radius: 14px 14px 4px 14px; white-space: pre-wrap; font-size: 13.5px; }
 .msg.assistant { font-size: 13.5px; color: var(--ink-2); line-height: 1.6; }

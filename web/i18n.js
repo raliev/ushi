@@ -34,6 +34,9 @@
         'Session': 'Сессия',
         'What gets captured when you take a screenshot': 'Что попадает в скриншот',
         'Capture': 'Захват',
+        'Manage…': 'Управление…',
+        'rename, delete': 'переименовать, удалить',
+        'Manage projects: rename, delete, open': 'Управление проектами: переименовать, удалить, открыть',
         'Full screen': 'Весь экран',
         'Area': 'Область',
         'Window': 'Окно',
@@ -73,6 +76,7 @@
         'Disconnected from server - retrying…': 'Нет связи с сервером - переподключение…',
         'screenshot': 'скриншот',
         'selected text': 'выделенный текст',
+        'full screen': 'весь экран',
         'Recognizer console': 'Консоль распознавателя',
         'Close': 'Закрыть',
 
@@ -370,8 +374,9 @@
         // ── Capture area ──
         'Screenshot area': 'Область скриншота',
         'What': 'Область, которую снимают',
-        'and Snap capture. Changes apply immediately, even mid-recording, so this window can stay out of your screenshots.':
-          'и «Снимок». Изменения применяются сразу, даже во время записи, так что это окно может не попадать на скриншоты.',
+        'and Snap capture.': 'и «Снимок».',
+        'always takes the whole screen. Changes apply immediately, even mid-recording, so this window can stay out of your screenshots.':
+          'всегда снимает весь экран. Изменения применяются сразу, даже во время записи, так что это окно может не попадать на скриншоты.',
         'main display': 'основной дисплей',
         'drag to select': 'выделите мышью',
         'click a window': 'щёлкните по окну',
@@ -386,12 +391,13 @@
         'Choose from window list': 'Выбрать из списка окон',
         'Refresh preview': 'Обновить предпросмотр',
         'Auto frames:': 'Автокадры:',
+        'Screenshots and auto frames:': 'Скриншоты и автокадры:',
         'the framed part only': 'только часть в рамке',
         'drag to move, edges to resize': 'перетаскивайте рамку, края - для изменения размера',
         'Detect again': 'Определить заново',
         'Use whole area': 'Вся область',
-        "Auto frames use the whole area. If the video is only part of it (a browser or call window), detect it so slide changes aren't drowned out by the page.":
-          'Автокадры используют всю область. Если видео занимает лишь её часть (окно браузера или звонка), найдите его, чтобы смена слайдов не терялась на фоне страницы.',
+        "Screenshots and auto frames use the whole area. If the video is only part of it (a browser or call window), detect it so slide changes aren't drowned out by the page.":
+          'Скриншоты и автокадры используют всю область. Если видео занимает лишь её часть (окно браузера или звонка), найдите его, чтобы смена слайдов не терялась на фоне страницы.',
         'Set by hand': 'Задать вручную',
         'Detect video': 'Найти видео',
         'Loading windows…': 'Загрузка окон…',
@@ -401,12 +407,19 @@
         'Drag the frame onto the video': 'Перетащите рамку на видео',
         'Auto frames will keep only the video area': 'Автокадры будут сохранять только область видео',
         'Selection cancelled': 'Выбор отменён',
+        "The screen capture didn't answer in 10 s. If macOS is asking about Screen Recording, allow it.":
+          'Захват экрана не ответил за 10 с. Если macOS спрашивает про запись экрана - разрешите.',
+        'Could not capture the screen: allow Screen Recording for this app (System Settings → Privacy & Security → Screen Recording), then press Refresh preview.':
+          'Не удалось снять экран: разрешите этому приложению запись экрана (Системные настройки → Конфиденциальность и безопасность → Запись экрана), затем нажмите «Обновить предпросмотр».',
         'manual': 'вручную',
 
         // ── Settings ──
         'AI for Beautify and chat': 'ИИ для оформления и чата',
         'Beautify model': 'Модель оформления',
         'Chat model': 'Модель чата',
+        "Empty: the Beautify model. Test lists the provider's models.": 'Пусто - модель оформления. «Проверить» покажет модели провайдера.',
+        'Same as Beautify': 'Как для оформления',
+        'Beautify and chat use this model.': 'Эта модель используется для оформления и чата.',
         'Offer to build the final version when recording stops': 'Предлагать собрать финальную версию после остановки записи',
         'Knowledge folder': 'Папка знаний',
         'Claude Code runs in this folder, so the MCP servers configured there (e.g.': 'Claude Code запускается в этой папке, поэтому настроенные там MCP-серверы (например,',

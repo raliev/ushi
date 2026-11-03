@@ -93,8 +93,9 @@ def normalize_base_url(provider: str, url: str) -> str:
     return url
 
 
-def config(settings: dict | None = None) -> dict:
-    """The effective provider settings: provider, base_url, model, key."""
+def config(settings: dict | None = None, chat: bool = False) -> dict:
+    """The effective provider settings: provider, base_url, model, key. chat: the chat model
+    (api_chat_model; empty = the Beautify model)."""
     s = settings or S.load_settings()
     provider = s.get("api_provider") or "gemini"
     p = PROVIDERS.get(provider, PROVIDERS["custom"])
@@ -103,7 +104,8 @@ def config(settings: dict | None = None) -> dict:
     if key and not p.get("local") and urlsplit(base_url).hostname != urlsplit(p["base_url"]).hostname:
         key = ""    # a provider's key goes to that provider only; other hosts: the "custom" provider
     return {"provider": provider, "base_url": base_url,
-            "model": (s.get("api_model") or "").strip() or p["model"], "key": key}
+            "model": (chat and (s.get("api_chat_model") or "").strip()) or (s.get("api_model") or "").strip() or p["model"],
+            "key": key}
 
 
 def local_provider(provider: str) -> bool:
@@ -144,7 +146,8 @@ def public(settings: dict) -> dict:
         out[pid] = {"name": p["name"], "base_url": p["base_url"], "model": p["model"], "key_url": p["key_url"],
                     "key": mask(k) if k else "", "env_key": bool(env_key(pid)), "local": bool(p.get("local"))}
     return {"providers": out, "provider": settings.get("api_provider") or "gemini",
-            "model": settings.get("api_model") or "", "base_url": settings.get("api_base_url") or ""}
+            "model": settings.get("api_model") or "", "chat_model": settings.get("api_chat_model") or "",
+            "base_url": settings.get("api_base_url") or ""}
 
 
 # ── Calls ────────────────────────────────────────────────────────────────────

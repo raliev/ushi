@@ -42,7 +42,7 @@ To run from source instead, see [Setup](#setup); to build the app yourself, [mac
 - **Batch**: a queue of YouTube links or video streams (`.m3u8`, or a pasted *Copy as cURL* for a video behind a login) → download (yt-dlp, subtitles as a second source) → transcribe → Beautify, each in its own project.
 
 **Screen.**
-- Global hotkeys: `Ctrl+Shift+S` -- screenshot + OCR ([EasyOCR](https://github.com/JaidedAI/EasyOCR)), `Ctrl+Shift+W` -- paste the selected text into the transcript verbatim.
+- Global hotkeys: `Ctrl+Shift+S` -- screenshot of the capture area + OCR, `Ctrl+Shift+M` -- screenshot of the whole screen + OCR ([EasyOCR](https://github.com/JaidedAI/EasyOCR)), `Ctrl+Shift+W` -- paste the selected text into the transcript verbatim.
 - Capture the full screen, an area or one window (even when covered).
 - **Auto frames**: a frame every second, kept only when a new scene stays on screen (pixel triage + CLIP filter that drops talking heads); **Detect video** crops to the player inside a browser or call window. See [Auto frames](#auto-frames).
 - Hide lines, screenshots and frames (one by one or "this and the similar ones"); **Pick** keeps the N frames that were talked about most.
@@ -184,7 +184,8 @@ python main.py myproject --engine parakeet --vocab-file notes.md --vocab-correct
 ```
 
 During recording:
-- `Ctrl+Shift+S` -- take a screenshot
+- `Ctrl+Shift+S` -- take a screenshot of the capture area (Capture in the web UI: screen, area or window, cropped to its frame)
+- `Ctrl+Shift+M` -- take a screenshot of the whole screen
 - `Ctrl+Shift+W` -- capture selected text
 - `Ctrl+C` -- stop recording
 

@@ -4,8 +4,9 @@ screenshot_helper.swift (macOS), so main.py and server.py drive both alike.
 
 Modes:
   screenshot_helper_win.py <output-dir> [capture-config.json]
-      Daemon: global hotkeys (Ctrl+Shift+S screenshot, Ctrl+Shift+W selection).
-      Also accepts "SNAP" lines on stdin. The capture config is re-read on every
+      Daemon: global hotkeys (Ctrl+Shift+S screenshot of the capture area, Ctrl+Shift+M
+      screenshot of the whole primary monitor, Ctrl+Shift+W selection).
+      Also accepts "SNAP" (capture area) and "SNAP FULL" lines on stdin. The capture config is re-read on every
       screenshot, so the capture area can be changed while recording.
       "AUTO <seconds>" starts automatic frames: every <seconds> a JPEG of the capture
       area goes to <output-dir>/.frames/ and "FRAME:<path>" is printed (no flash).
@@ -19,7 +20,8 @@ Capture config (JSON), coordinates in physical pixels of the virtual screen:
   {"mode": "full"}                                         the primary monitor
   {"mode": "region", "rect": {"x":..,"y":..,"w":..,"h":..}}
   {"mode": "window", "windowId": <HWND>, "owner": "Google Chrome", "title": "..."}
-  Optional "frames_crop": {"x":..,"y":..,"w":..,"h":..} in fractions of the captured image.
+  Optional "frames_crop": {"x":..,"y":..,"w":..,"h":..} in fractions of the captured image:
+  automatic frames and Ctrl+Shift+S keep only that part.
 
 A window nothing covers is grabbed from the screen; a covered one is rendered with
 PrintWindow(PW_RENDERFULLCONTENT), which works behind other windows (not while minimized)
@@ -357,17 +359,23 @@ def capture_image(cfg: dict) -> tuple[Image.Image, tuple[int, int, int, int]]:
     return grab(*r), r
 
 
-def crop_fraction(img: Image.Image, f: dict | None) -> Image.Image:
+def crop_box(img: Image.Image, f: dict | None) -> tuple[int, int, int, int] | None:
+    """frames_crop (fractions of the image) as a pixel box, or None for the whole image."""
     r = None
     try:
         r = [float(f[k]) for k in ("x", "y", "w", "h")] if f else None
     except (KeyError, TypeError, ValueError):
         pass
     if not r or r[2] <= 0.02 or r[3] <= 0.02:
-        return img
+        return None
     w, h = img.size
     box = (max(0, int(r[0] * w)), max(0, int(r[1] * h)), min(w, int((r[0] + r[2]) * w)), min(h, int((r[1] + r[3]) * h)))
-    return img.crop(box) if box[2] - box[0] >= 16 and box[3] - box[1] >= 16 else img
+    return box if box[2] - box[0] >= 16 and box[3] - box[1] >= 16 else None
+
+
+def crop_fraction(img: Image.Image, f: dict | None) -> Image.Image:
+    box = crop_box(img, f)
+    return img.crop(box) if box else img
 
 
 def stamp() -> str:
@@ -453,10 +461,18 @@ class Daemon:
         self.frame_interval: float | None = None
         self.frame_wake = threading.Event()
 
-    def screenshot(self):
+    def screenshot(self, full: bool = False):
+        """The capture area with its crop; full: the whole primary monitor (Ctrl+Shift+M)."""
         path = self.out_dir / f"screenshot_{stamp()}.png"
         try:
-            img, rect = capture_image(load_config(self.config_path))
+            cfg = {"mode": "full"} if full else load_config(self.config_path)
+            img, rect = capture_image(cfg)
+            box = crop_box(img, cfg.get("frames_crop"))
+            if box:
+                sx, sy = rect[2] / img.width, rect[3] / img.height
+                rect = (rect[0] + round(box[0] * sx), rect[1] + round(box[1] * sy),
+                        round((box[2] - box[0]) * sx), round((box[3] - box[1]) * sy))
+                img = img.crop(box)
             img.save(path, "PNG", compress_level=3)
         except Exception as e:
             log(f"capture failed: {e}")
@@ -507,6 +523,8 @@ class Daemon:
             cmd = line.strip().upper()
             if cmd == "SNAP":
                 self.actions.put(self.screenshot)
+            elif cmd == "SNAP FULL":
+                self.actions.put(lambda: self.screenshot(full=True))
             elif cmd.startswith("AUTO"):
                 arg = cmd[4:].strip()
                 try:
@@ -527,15 +545,19 @@ class Daemon:
         elif hid == 2:
             log("hotkey 2 (selection) fired")
             self.actions.put(selected_text)
+        elif hid == 3:
+            log("hotkey 3 (full screen) fired")
+            self.actions.put(lambda: self.screenshot(full=True))
 
     def run(self):
         self.out_dir.mkdir(parents=True, exist_ok=True)
         for target in (self.actions_loop, self.frames_loop, self.stdin_loop):
             threading.Thread(target=target, daemon=True).start()
         hotkey_thread({1: (MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 0x53),       # S
-                       2: (MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 0x57)},      # W
+                       2: (MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 0x57),       # W
+                       3: (MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 0x4D)},      # M
                       self.on_hotkey)
-        log("Helper ready (Ctrl+Shift+S: screenshot, Ctrl+Shift+W: selection)")
+        log("Helper ready (Ctrl+Shift+S: screenshot, Ctrl+Shift+M: full screen, Ctrl+Shift+W: selection)")
         try:
             self.flash_ui()
         except Exception as e:     # no tkinter / no display: everything but the flash still works

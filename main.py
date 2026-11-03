@@ -1507,7 +1507,7 @@ def main():
             print("Ctrl+Shift+S: the video frame at the current position")
     else:
         print(f"Listening on {what} (auto-stop in {args.minutes} min, Ctrl+C to stop early)...")
-        print(f"Ctrl+Shift+S: screenshot, Ctrl+Shift+W: selection")
+        print("Ctrl+Shift+S: screenshot, Ctrl+Shift+M: full screen, Ctrl+Shift+W: selection")
     events.emit("status", state="listening", engine=args.engine, source=args.source)
 
     try:

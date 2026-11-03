@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -33,6 +34,7 @@ DEFAULT_SETTINGS = {
     "chat_model": "sonnet",
     "api_provider": "gemini",         # api engine: gemini | openai | anthropic | openrouter | custom (llm_api.py)
     "api_model": "",                  # for the api engine; empty = provider default
+    "api_chat_model": "",             # api engine, chat only; empty = api_model
     "api_base_url": "",               # empty = the provider's; required for custom
     "ai_setup_done": False,           # the first-run AI setup dialog was answered
     "auto_final_beautify": True,      # offer (ask) to build the final version when recording stops
@@ -239,6 +241,116 @@ def list_projects() -> list[dict]:
         out.append({"name": d.name, "sessions": len(transcripts), "mtime": mtime})
     out.sort(key=lambda p: -p["mtime"])
     return out
+
+
+_TITLE_CACHE: dict[str, tuple[float, str]] = {}
+_H1_RE = re.compile(r"<h1[^>]*>(.*?)</h1>", re.S | re.I)
+_TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.S | re.I)
+
+
+def doc_title(path: Path) -> str:
+    """The heading of a Beautified document: its <h1> (else its <title>), as plain text."""
+    import html as _html
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return ""
+    hit = _TITLE_CACHE.get(str(path))
+    if hit and hit[0] == mtime:
+        return hit[1]
+    text = path.read_text(encoding="utf-8", errors="replace")
+    m = _H1_RE.search(text) or _TITLE_RE.search(text)
+    title = " ".join(_html.unescape(re.sub(r"<[^>]+>", "", m.group(1))).split()) if m else ""
+    _TITLE_CACHE[str(path)] = (mtime, title)
+    return title
+
+
+def project_overview(project: str) -> dict:
+    """A project for the Manage page: its sessions with their times and Beautified versions,
+    and the title of the latest Beautified document."""
+    pdir = project_dir(project)
+    sessions = []
+    for s in list_sessions(project):
+        manifest = load_manifest(project, s["sid"])
+        versions = []
+        for v in manifest["versions"]:
+            if v.get("status") != "done" or not v.get("html"):
+                continue
+            path = session_dir(project, s["sid"]) / v["html"]
+            if not path.exists():
+                continue
+            versions.append({"v": v.get("v"), "mode": v.get("mode") or "", "created": v.get("created") or "",
+                             "url": file_url(path), "title": doc_title(path),
+                             "docs_url": file_url(v["docs_copy"]) if v.get("docs_copy") and Path(v["docs_copy"]).exists() else None})
+        sessions.append({k: s[k] for k in ("sid", "date", "start", "end", "lines")} | {"versions": versions})
+    latest = max((v | {"sid": s["sid"]} for s in sessions for v in s["versions"]),
+                 key=lambda v: (v["created"], v["sid"]), default=None)
+    dates = sorted(s["date"] for s in sessions if s["date"])
+    return {"name": project, "url": file_url(pdir), "sessions": sessions,
+            "title": latest["title"] if latest else "", "title_url": latest["url"] if latest else None,
+            "first": dates[0] if dates else "", "last": dates[-1] if dates else "",
+            "mtime": pdir.stat().st_mtime if pdir.exists() else 0}
+
+
+_TEXT_SUFFIXES = {".json", ".jsonl", ".txt", ".md", ".log"}
+
+
+def rename_project(old: str, new: str) -> str:
+    """Rename a project folder. Transcripts, manifests and frame lists keep absolute paths of
+    screenshots and frames, so those are rewritten to the new folder too."""
+    old, new = safe_name(old), safe_name(new)
+    src, dst = project_dir(old), project_dir(new)
+    if not src.is_dir():
+        raise ValueError("No such project")
+    if new == old:
+        return new
+    if dst.exists() and new.lower() != old.lower():    # a case-only rename is the same folder on macOS
+        raise ValueError(f"A project named “{new}” already exists")
+    tmp = src.with_name(f".rename-{old}-{int(time.time())}")
+    src.rename(tmp)    # via a temporary name, so a case-only rename works on case-insensitive disks
+    try:
+        tmp.rename(dst)
+    except OSError:
+        tmp.rename(src)
+        raise
+    prefixes = {f"{p}{os.sep}": f"{q}{os.sep}" for p, q in ((src, dst), (src.resolve(), dst.resolve()))}
+    for f in dst.rglob("*"):
+        if f.suffix.lower() not in _TEXT_SUFFIXES or not f.is_file():
+            continue
+        try:
+            text = f.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        out = text
+        for a, b in prefixes.items():
+            out = out.replace(a, b)
+            if os.sep == "\\":     # JSON escapes backslashes
+                out = out.replace(json.dumps(a)[1:-1], json.dumps(b)[1:-1])
+        if out != text:
+            f.write_text(out, encoding="utf-8")
+    if load_settings().get("last_project") == old:
+        save_settings({"last_project": new})
+    return new
+
+
+def trash_project(project: str) -> Path:
+    """Move a project folder to the system Trash (macOS) or to .webui/trash/, never delete it outright."""
+    project = safe_name(project)
+    src = project_dir(project)
+    if not src.is_dir():
+        raise ValueError("No such project")
+    trash = Path.home() / ".Trash"
+    if sys.platform != "darwin" or not trash.is_dir():
+        trash = WEBUI_DIR / "trash"
+    trash.mkdir(parents=True, exist_ok=True)
+    dst = trash / project
+    if dst.exists():
+        dst = trash / f"{project} {datetime.now().strftime('%Y-%m-%d %H.%M.%S')}"
+    import shutil
+    shutil.move(str(src), str(dst))
+    if load_settings().get("last_project") == project:
+        save_settings({"last_project": ""})
+    return dst
 
 
 def transcript_path(project: str, sid: str) -> Path:

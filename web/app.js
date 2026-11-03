@@ -39,6 +39,7 @@ const isLive = () => !!(st.session && st.session.live);
 const recActive = () => !!st.recorder.active;
 
 const ICON = {
+  edit: '<svg viewBox="0 0 20 20" class="ico"><path d="M13.5 3.5l3 3L7 16H4v-3z"/><path d="M11.5 5.5l3 3"/></svg>',
   check: '<svg viewBox="0 0 12 12"><path d="M2.5 6.2l2.2 2.2 4.8-4.8"/></svg>',
   sparkle: '<svg viewBox="0 0 20 20" class="ico"><path d="M10 2.5l1.6 4.4 4.4 1.6-4.4 1.6L10 14.5l-1.6-4.4L4 8.5l4.4-1.6zM15.5 13l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/></svg>',
   chev: '<svg viewBox="0 0 16 16" class="ico" style="width:12px;height:12px"><path d="M4 6l4 4 4-4"/></svg>',
@@ -260,7 +261,8 @@ async function reloadSession() {
 
 function renderProjectMenu() {
   const m = $('#projectMenu');
-  m.innerHTML = '<div class="group">Projects</div>' + st.projects.map(p => `
+  m.innerHTML = `<a class="mi" href="/manage"><span class="tick">${ICON.edit}</span><span class="mi-main"><div class="mi-title">Manage…</div></span><span class="mi-right">rename, delete</span></a><div class="sep"></div>`
+    + '<div class="group">Projects</div>' + st.projects.map(p => `
     <button class="mi ${p.name === st.project ? 'on' : ''}" data-p="${esc(p.name)}">
       <span class="tick">${p.name === st.project ? '✓' : ''}</span>
       <span class="mi-main"><div class="mi-title">${esc(p.name)}</div></span>
@@ -269,12 +271,21 @@ function renderProjectMenu() {
   $('#projectName').textContent = st.project || 'Choose…';
 }
 $('#projectMenu').addEventListener('click', e => {
-  const b = e.target.closest('.mi'); if (!b) return;
+  const b = e.target.closest('.mi'); if (!b || b.tagName === 'A') return;
   closeMenus();
   if (b.dataset.new) return newProjectDialog();
   if (recActive() && b.dataset.p !== st.recorder.project) toast('Recording continues in the background.');
   selectProject(b.dataset.p).catch(fail);
 });
+
+// A project renamed or deleted on the Manage page (maybe in another window)
+async function onProjectsChanged(m) {
+  const renamed = m.renamed && m.renamed[st.project];
+  try { st.projects = await api('GET', '/api/projects'); } catch (_) { return; }
+  if (renamed) { st.project = renamed; await selectProject(renamed, { keepSession: !!st.sid }).catch(fail); if (st.sid) reloadSession(); }
+  else if (m.deleted && m.deleted === st.project) await selectProject((st.projects[0] || {}).name || null).catch(fail);
+  renderProjectMenu();
+}
 
 function newProjectDialog() {
   openModal(`
@@ -1764,7 +1775,11 @@ function msgHtml(m) {
   return `<div class="msg assistant" data-id="${m.id}">${tools}${body}${err}</div>`;
 }
 
-function renderChat() {
+// Streaming answers keep growing: follow them only while the log is scrolled to the bottom,
+// so the user can scroll up and read while the reply is still coming.
+const atBottom = el => el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+
+function renderChat({ follow = true } = {}) {
   const log = $('#chatLog');
   const msgs = st.chat.messages;
   $('#clearChatBtn').classList.toggle('hidden', !(st.side === 'chat' && msgs.length));
@@ -1773,8 +1788,9 @@ function renderChat() {
     log.innerHTML = `<div class="empty" style="flex:0;padding:30px 10px 10px"><div class="art">${ICON.chat}</div><h3>Ask about this session</h3><p>Answers come from the ${isLive() ? 'live' : 'saved'} transcript${st.session && st.session.screenshots.length ? ' and its screenshots' : ''}.</p></div>
       <div class="suggest"><div class="hd">Try</div>${q.map(x => `<button data-q="${esc(x)}">${esc(x)}</button>`).join('')}</div>`;
   } else {
+    const stick = follow || atBottom(log), top = log.scrollTop;
     log.innerHTML = msgs.map(msgHtml).join('');
-    log.scrollTop = log.scrollHeight;
+    log.scrollTop = stick ? log.scrollHeight : top;
   }
   $('#composerHint').textContent = isLive() ? 'Recording keeps running while you chat.' : 'Ask anything about this transcript.';
   $('#sendBtn').disabled = st.chat.busy || !st.sid;
@@ -1807,7 +1823,7 @@ async function sendChat() {
 function onChatMessage(ev) {
   if (ev.project !== st.project || ev.sid !== st.sid) return;
   if (!st.chat.messages.find(m => m.id === ev.message.id)) st.chat.messages.push(ev.message);
-  renderChat();
+  renderChat({ follow: ev.message.role === 'user' });
 }
 function onChatUpdate(ev) {
   if (ev.project !== st.project || ev.sid !== st.sid) return;
@@ -1817,10 +1833,11 @@ function onChatUpdate(ev) {
   if (ev.done) { m.text = ev.text || m.text; m.status = ev.status; m.error = ev.error; st.chat.busy = false; if (st.side !== 'chat') $('#chatDot').classList.remove('hidden'); }
   const el = $(`#chatLog .msg[data-id="${ev.id}"]`);
   if (el) {
+    const log = $('#chatLog'), stick = atBottom(log), top = log.scrollTop;
     const tmp = document.createElement('div'); tmp.innerHTML = msgHtml(m);
     el.replaceWith(tmp.firstElementChild);
-    const log = $('#chatLog'); log.scrollTop = log.scrollHeight;
-  } else renderChat();
+    log.scrollTop = stick ? log.scrollHeight : top;
+  } else renderChat({ follow: false });
   $('#sendBtn').disabled = st.chat.busy;
 }
 
@@ -1846,7 +1863,7 @@ function renderCapturePop(waiting) {
   const [, label] = captureText(cfg);
   pop.innerHTML = `
     <div class="pop-title">Screenshot area</div>
-    <div class="pop-sub">What <kbd>⌃</kbd><kbd>⇧</kbd><kbd>S</kbd> and Snap capture. Changes apply immediately, even mid-recording, so this window can stay out of your screenshots.</div>
+    <div class="pop-sub">What <kbd>⌃</kbd><kbd>⇧</kbd><kbd>S</kbd> and Snap capture. <kbd>⌃</kbd><kbd>⇧</kbd><kbd>M</kbd> always takes the whole screen. Changes apply immediately, even mid-recording, so this window can stay out of your screenshots.</div>
     <div class="modes">
       <button class="mode ${cfg.mode === 'full' ? 'on' : ''}" data-m="full">${ICON.screen}Full screen<small>main display</small></button>
       <button class="mode ${cfg.mode === 'region' ? 'on' : ''}" data-m="region">${ICON.area}Area<small>drag to select</small></button>
@@ -1858,15 +1875,15 @@ function renderCapturePop(waiting) {
       : '<span class="state-sub">No preview yet</span>'}<span class="pv-label">${esc(label)}</span></div>
     <div class="pop-row"><button class="ghost-btn small" id="winListBtn">Choose from window list</button><button class="ghost-btn small" id="pvRefresh">Refresh preview</button></div>
     <div class="crop-row">${cfg.frames_crop
-      ? `<span><b>Auto frames:</b> the framed part only <span class="state-sub" id="cropInfo">(${cropInfo(cfg)}) · drag to move, edges to resize</span></span><span class="crop-btns"><button class="ghost-btn small" id="detectBtn">Detect again</button><button class="ghost-btn small" id="cropReset">Use whole area</button></span>`
-      : `<span class="state-sub">Auto frames use the whole area. If the video is only part of it (a browser or call window), detect it so slide changes aren't drowned out by the page.</span><span class="crop-btns"><button class="ghost-btn small" id="cropHand">Set by hand</button><button class="ghost-btn small" id="detectBtn">Detect video</button></span>`}</div>
+      ? `<span><b>Screenshots and auto frames:</b> the framed part only <span class="state-sub" id="cropInfo">(${cropInfo(cfg)}) · drag to move, edges to resize</span></span><span class="crop-btns"><button class="ghost-btn small" id="detectBtn">Detect again</button><button class="ghost-btn small" id="cropReset">Use whole area</button></span>`
+      : `<span class="state-sub">Screenshots and auto frames use the whole area. If the video is only part of it (a browser or call window), detect it so slide changes aren't drowned out by the page.</span><span class="crop-btns"><button class="ghost-btn small" id="cropHand">Set by hand</button><button class="ghost-btn small" id="detectBtn">Detect video</button></span>`}</div>
     <div class="win-list hidden" id="winList"></div>`;
   $('#detectBtn').onclick = detectVideo;
   const cr = $('#cropReset'); if (cr) cr.onclick = () => saveCrop(null);
   const ch = $('#cropHand'); if (ch) ch.onclick = () => saveCrop({ x: 0.15, y: 0.15, w: 0.7, h: 0.7 });
   bindCropEditor();
   $$('.mode', pop).forEach(b => b.onclick = () => chooseCapture(b.dataset.m));
-  $('#pvRefresh').onclick = async () => { try { st.capture = await api('POST', '/api/capture/preview'); renderCapturePop(); } catch (e) { fail(e); } };
+  $('#pvRefresh').onclick = async () => { try { setCapture(await api('POST', '/api/capture/preview')); renderCapturePop(); } catch (e) { fail(e); } };
   $('#winListBtn').onclick = async () => {
     const wl = $('#winList'); wl.classList.remove('hidden'); wl.innerHTML = '<div style="padding:10px" class="state-sub">Loading windows…</div>';
     try {
@@ -1875,7 +1892,7 @@ function renderCapturePop(waiting) {
       $$('button', wl).forEach(b => b.onclick = async () => {
         const w = wins[+b.dataset.i];
         renderCapturePop('Saving…');
-        try { st.capture = await api('POST', '/api/capture', { mode: 'window', windowId: w.windowId, owner: w.owner, title: w.title, rect: w.rect }); } catch (e) { fail(e); }
+        try { setCapture(await api('POST', '/api/capture', { mode: 'window', windowId: w.windowId, owner: w.owner, title: w.title, rect: w.rect })); } catch (e) { fail(e); }
         renderCaptureBtn(); renderCapturePop();
       });
     } catch (e) { fail(e); }
@@ -1951,22 +1968,27 @@ function bindCropEditor() {
 async function detectVideo() {
   renderCapturePop('Watching the capture area for ~6 s · keep the video playing');
   try {
-    st.capture = await api('POST', '/api/capture/detect-video');
+    setCapture(await api('POST', '/api/capture/detect-video'));
     toast('Auto frames will keep only the video area', 'ok');
   } catch (e) { fail(e); }
   renderCapturePop();
+}
+// The capture choice is saved even when its preview couldn't be taken: say why it is stale.
+function setCapture(c) {
+  st.capture = c;
+  if (c && c.preview_error) toast(c.preview_error, 'error', 9000);
+  return c;
 }
 async function chooseCapture(mode) {
   try {
     if (mode === 'full') {
       renderCapturePop('Saving…');
-      st.capture = await api('POST', '/api/capture', { mode: 'full' });
+      setCapture(await api('POST', '/api/capture', { mode: 'full' }));
     } else {
       renderCapturePop(mode === 'region' ? 'Drag on screen to select the area · Esc to cancel' : 'Click the window to capture · Esc to cancel');
       const res = await api('POST', '/api/capture/select', { kind: mode });
-      st.capture = res;
-      if (res.cancelled) toast('Selection cancelled');
-      else toast(`Screenshots will capture: ${captureText(res.config)[1]}`, 'ok');
+      if (res.cancelled) { st.capture = res; toast('Selection cancelled'); }
+      else if (!setCapture(res).preview_error) toast(`Screenshots will capture: ${captureText(res.config)[1]}`, 'ok');
     }
   } catch (e) { fail(e); }
   renderCaptureBtn(); renderCapturePop();
@@ -1989,7 +2011,7 @@ async function openSettings() {
   try { aiInfo = await api('GET', '/api/ai'); } catch (_) { /* old server: no AI choice */ }
   let vis = null;
   try { vis = await api('GET', '/api/ai/vision'); } catch (_) { /* old server */ }
-  const picker = aiInfo && aiPicker(aiInfo);
+  const picker = aiInfo && aiPicker(aiInfo, { chat: true });
   const modelOpts = (cur) => ['opus', 'sonnet', 'haiku'].map(m => `<option value="${m}" ${cur === m ? 'selected' : ''}>${m[0].toUpperCase() + m.slice(1)}</option>`).join('')
     + (cur && !['opus', 'sonnet', 'haiku'].includes(cur) ? `<option value="${esc(cur)}" selected>${esc(cur)}</option>` : '');
   openModal(`
@@ -1997,7 +2019,7 @@ async function openSettings() {
     <div class="modal-body">
       <fieldset class="fset"><legend>AI for Beautify and chat</legend>
         ${picker ? picker.html : ''}
-        <div class="ai-claude">
+        <div class="ai-claude-models">
         <div class="frow"><label>Beautify model</label><select class="field" id="setBModel">${modelOpts(s.beautify_model)}</select></div>
         <div class="frow"><label>Chat model</label><select class="field" id="setCModel">${modelOpts(s.chat_model)}</select></div>
         </div>
@@ -2031,8 +2053,8 @@ async function openSettings() {
   root => {
     $('[data-close]', root).onclick = closeModal;
     const ai = picker && picker.mount(root);
-    // Claude Code model choices only make sense with Claude Code.
-    const syncClaude = () => $('.ai-claude', root).classList.toggle('hidden', !!ai && ai.form().engine !== 'claude');
+    // Opus / Sonnet / Haiku are Claude Code's models; with an API the models are picked in its section.
+    const syncClaude = () => $('.ai-claude-models', root).classList.toggle('hidden', !!ai && ai.form().engine !== 'claude');
     $$('.ai-card', root).forEach(c => c.addEventListener('click', syncClaude));
     syncClaude();
     const ai0 = ai && JSON.stringify(ai.form());
@@ -2079,7 +2101,8 @@ $('#settingsBtn').onclick = openSettings;
 
 // ── AI provider (Beautify + chat): Claude Code or an LLM API ────────────────
 // The AI picker (cards + key / host / model), shared by the first-run dialog and Settings.
-function aiPicker(a) {
+// chat: also offer a separate chat model for the API (Settings); else chat uses the Beautify model.
+function aiPicker(a, { chat = false } = {}) {
   const P = a.providers;
   const sel = { engine: a.engine === 'claude' && !a.claude ? 'api' : a.engine, provider: a.provider };
   const card = (id, title, sub, disabled) => `<button type="button" class="ai-card ${disabled ? 'off' : ''}" data-id="${id}" ${disabled ? 'disabled' : ''}><b>${esc(title)}</b><span>${sub}</span></button>`;
@@ -2095,9 +2118,11 @@ function aiPicker(a) {
           <div class="help" id="aiKeyHelp"></div></div></div>
         <div class="frow"><label>Host (base URL)</label><div><input class="field" id="aiBase">
           <div class="help">OpenAI-compatible endpoint. Leave empty for the provider's default. Local servers: /v1 is added when there is no path.</div></div></div>
-        <div class="frow"><label>Model</label><div><div style="display:flex;gap:8px"><input class="field" id="aiModel" list="aiModels"><datalist id="aiModels"></datalist>
+        <div class="frow"><label>${chat ? 'Beautify model' : 'Model'}</label><div><div style="display:flex;gap:8px"><input class="field" id="aiModel" list="aiModels"><datalist id="aiModels"></datalist>
           <button type="button" class="ghost-btn small" id="aiTest" style="height:30px;white-space:nowrap">Test</button></div>
-          <div class="help"><span id="aiTestRes" class="check-res"></span></div></div></div>
+          <div class="help"><span id="aiTestRes" class="check-res"></span>${chat ? '' : ' Beautify and chat use this model.'}</div></div></div>
+        ${chat ? `<div class="frow"><label>Chat model</label><div><input class="field" id="aiChatModel" list="aiModels">
+          <div class="help">Empty: the Beautify model. Test lists the provider's models.</div></div></div>` : ''}
         <div class="help ai-note">With an API, Beautify is one pass over the transcript and the screenshots' text (no images, no tools); chat sees the transcript and your notes.</div>
       </div>`;
   const mount = root => {
@@ -2116,12 +2141,17 @@ function aiPicker(a) {
       $('#aiBase', root).placeholder = p.base_url || 'http://localhost:11434/v1';
       $('#aiModel', root).value = same ? a.model : '';
       $('#aiModel', root).placeholder = p.model || 'model name';
+      if (chat) {
+        $('#aiChatModel', root).value = same ? (a.chat_model || '') : '';
+        $('#aiChatModel', root).placeholder = 'Same as Beautify';
+      }
       $('#aiModels', root).innerHTML = '';
       $('#aiTestRes', root).textContent = '';
       if (p.local && p.base_url && !same) $('#aiTest', root).click();   // list the installed models
     };
     const form = () => ({ engine: sel.engine, provider: sel.provider, api_key: $('#aiKey', root).value.trim(),
-      base_url: $('#aiBase', root).value.trim(), model: $('#aiModel', root).value.trim() });
+      base_url: $('#aiBase', root).value.trim(), model: $('#aiModel', root).value.trim(),
+      ...(chat ? { chat_model: $('#aiChatModel', root).value.trim() } : {}) });
     $$('.ai-card', root).forEach(c => c.onclick = () => {
       if (c.dataset.id === 'claude') sel.engine = 'claude'; else { sel.engine = 'api'; sel.provider = c.dataset.id; }
       show();
@@ -2250,7 +2280,7 @@ function addLog(line) {
 }
 
 function renderAll() {
-  renderControl(); renderTranscript(); renderShots(); renderFrames(); renderBeautify(); renderDoc(); renderChat(); renderSessionMenu();
+  renderControl(); renderTranscript(); renderShots(); renderFrames(); renderBeautify(); renderDoc(); renderChat({ follow: false }); renderSessionMenu();
 }
 
 // ── Batch queue: how many tasks are still in progress (badge on the Batch button) ──
@@ -2385,6 +2415,7 @@ async function handle(m) {
       if (m.project === st.project) { st.external = { files: m.files, speakers: m.speakers }; renderExternal(); }
       break;
     case 'toast': toast(m.text, m.level || 'info'); break;
+    case 'projects_changed': onProjectsChanged(m); break;
     case 'download': onDownload(m); break;
   }
 }

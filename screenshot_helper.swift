@@ -6,15 +6,16 @@ import CoreGraphics
 //
 // Modes:
 //   screenshot_helper <output-dir> [capture-config.json]
-//       Daemon: global hotkeys (Ctrl+Shift+S screenshot, Ctrl+Shift+W selection).
-//       Also accepts "SNAP" lines on stdin. The capture config is re-read on every
+//       Daemon: global hotkeys (Ctrl+Shift+S screenshot of the capture area,
+//       Ctrl+Shift+M screenshot of the whole main display, Ctrl+Shift+W selection).
+//       Also accepts "SNAP" (capture area) and "SNAP FULL" lines on stdin. The capture config is re-read on every
 //       screenshot, so the capture area can be changed while recording.
 //       "AUTO <seconds>" starts automatic frames: every <seconds> a JPEG of the capture
 //       area goes to <output-dir>/.frames/ and "FRAME:<path>" is printed (no flash).
 //       "AUTO OFF" stops them. main.py decides which frames are worth keeping.
 //   screenshot_helper <output-dir> [capture-config.json] --hotkeys-only
 //       Same daemon, but Ctrl+Shift+S only prints "HOTKEY:SNAP" (main.py grabs the frame of
-//       the video file being watched instead of the screen).
+//       the video file being watched instead of the screen). Ctrl+Shift+M still takes the screen.
 //   screenshot_helper --select-region     Drag-select overlay → prints REGION:{json}
 //   screenshot_helper --pick-window       Click-a-window overlay → prints WINDOW:{json}
 //   screenshot_helper --list-windows      Prints on-screen windows as a JSON array
@@ -25,7 +26,7 @@ import CoreGraphics
 //   {"mode": "region", "rect": {"x":..,"y":..,"w":..,"h":..}}   global coords, points, top-left origin
 //   {"mode": "window", "windowId": 123, "owner": "Microsoft Teams", "title": "..."}
 //   Optional "frames_crop": {"x":..,"y":..,"w":..,"h":..} in fractions of the captured image
-//   (set by "Detect video"): automatic frames keep only that part. Screenshots stay whole.
+//   (set by "Detect video" or by hand): automatic frames and Ctrl+Shift+S keep only that part.
 
 var gScreenshotDir = ""
 var gConfigPath: String? = nil
@@ -191,16 +192,33 @@ func flash(_ cgRect: CGRect) {
 
 // ── Daemon actions ───────────────────────────────────────────────────────────
 
-func takeScreenshot() {
+/// The part of the captured image the config's frames_crop keeps (fractions of the image),
+/// plus that part's rect in global coordinates (for the flash).
+func applyCrop(_ image: CGImage, _ rect: CGRect, _ crop: CGRect?) -> (CGImage, CGRect) {
+    guard let f = crop else { return (image, rect) }
+    let w = CGFloat(image.width), h = CGFloat(image.height)
+    let px = CGRect(x: f.minX * w, y: f.minY * h, width: f.width * w, height: f.height * h)
+        .integral.intersection(CGRect(x: 0, y: 0, width: w, height: h))
+    guard px.width >= 16, px.height >= 16, let cropped = image.cropping(to: px) else { return (image, rect) }
+    let r = rect.width > 0 ? CGRect(x: rect.minX + f.minX * rect.width, y: rect.minY + f.minY * rect.height,
+                                    width: f.width * rect.width, height: f.height * rect.height) : rect
+    return (cropped, r)
+}
+
+/// Ctrl+Shift+S / "SNAP": the capture area (full screen, area or window) with its crop.
+/// Ctrl+Shift+M / "SNAP FULL": the whole main display, whatever the capture area is.
+func takeScreenshot(full: Bool = false) {
     let formatter = DateFormatter()
     formatter.dateFormat = "yyyyMMdd_HHmmss_SSS"
     let filename = "screenshot_\(formatter.string(from: Date())).png"
     let path = (gScreenshotDir as NSString).appendingPathComponent(filename)
 
-    guard let (image, rect) = captureImage(loadConfig(gConfigPath)) else {
+    let config = full ? CaptureConfig() : loadConfig(gConfigPath)
+    guard let (raw, rawRect) = captureImage(config) else {
         fputs("[screenshot-helper] capture failed (check Screen Recording permission)\n", stderr)
         return
     }
+    let (image, rect) = applyCrop(raw, rawRect, config.framesCrop)
     if writePNG(image, path) {
         print("SCREENSHOT:\(path)")
         fflush(stdout)
@@ -226,16 +244,11 @@ func takeFrame() {
     formatter.dateFormat = "yyyyMMdd_HHmmss_SSS"
     let path = (dir as NSString).appendingPathComponent("frame_\(formatter.string(from: Date())).jpg")
     let config = loadConfig(gConfigPath)
-    guard var (image, _) = captureImage(config) else {
+    guard let (raw, rect) = captureImage(config) else {
         fputs("[screenshot-helper] frame capture failed\n", stderr)
         return
     }
-    if let f = config.framesCrop {
-        let w = CGFloat(image.width), h = CGFloat(image.height)
-        let px = CGRect(x: f.minX * w, y: f.minY * h, width: f.width * w, height: f.height * h)
-            .integral.intersection(CGRect(x: 0, y: 0, width: w, height: h))
-        if px.width >= 16, px.height >= 16, let cropped = image.cropping(to: px) { image = cropped }
-    }
+    let (image, _) = applyCrop(raw, rect, config.framesCrop)
     if writeJPEG(image, path) {
         print("FRAME:\(path)")
         fflush(stdout)
@@ -548,6 +561,9 @@ let handler: EventHandlerUPP = { (_, event, _) -> OSStatus in
     case 2:
         fputs("[screenshot-helper] hotkey 2 (selection) fired\n", stderr)
         getSelectedText()
+    case 3:
+        fputs("[screenshot-helper] hotkey 3 (full screen) fired\n", stderr)
+        takeScreenshot(full: true)
     default: break
     }
     return noErr
@@ -590,12 +606,24 @@ RegisterEventHotKey(
     &hotKeyRef2
 )
 
-// stdin commands from main.py: "SNAP" takes a screenshot, "AUTO <sec>" / "AUTO OFF" auto frames.
+// Register Ctrl+Shift+M (kVK_ANSI_M = 0x2E): the whole screen
+var hotKeyRef3: EventHotKeyRef?
+let hotKeyID3 = EventHotKeyID(signature: OSType(0x53435253), id: 3)
+RegisterEventHotKey(
+    UInt32(kVK_ANSI_M),
+    UInt32(controlKey | shiftKey),
+    hotKeyID3,
+    GetApplicationEventTarget(),
+    0,
+    &hotKeyRef3
+)
+
+// stdin commands from main.py: "SNAP" takes a screenshot ("SNAP FULL": the whole screen), "AUTO <sec>" / "AUTO OFF" auto frames.
 DispatchQueue.global(qos: .userInitiated).async {
     while let line = readLine() {
         let cmd = line.trimmingCharacters(in: .whitespacesAndNewlines)
-        if cmd == "SNAP" {
-            DispatchQueue.main.async { takeScreenshot() }
+        if cmd == "SNAP" || cmd == "SNAP FULL" {
+            DispatchQueue.main.async { takeScreenshot(full: cmd == "SNAP FULL") }
         } else if cmd.hasPrefix("AUTO") {
             let arg = cmd.dropFirst(4).trimmingCharacters(in: .whitespaces)
             setAutoFrames(arg.uppercased() == "OFF" ? nil : (Double(arg) ?? 1.0))
@@ -604,7 +632,7 @@ DispatchQueue.global(qos: .userInitiated).async {
     setAutoFrames(nil)
 }
 
-fputs("Helper ready (Ctrl+Shift+S: screenshot, Ctrl+Shift+W: selection)\n", stderr)
+fputs("Helper ready (Ctrl+Shift+S: screenshot, Ctrl+Shift+M: full screen, Ctrl+Shift+W: selection)\n", stderr)
 
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)

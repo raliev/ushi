@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ushi · Projects</title>
+<link rel="icon" type="image/png" href="/static/img/favicon.png">
+<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/batch.css">
+<link rel="stylesheet" href="/static/manage.css">
+</head>
+<body class="batch-page manage-page">
+<header class="topbar">
+  <a class="brand" href="/" title="Main window"><img class="logo" src="/static/img/ushi-logo.png" alt=""><span class="brand-name">ushi</span></a>
+  <div class="b-title">Projects <span class="b-sub" id="sub"></span></div>
+  <div class="top-actions">
+    <input class="field pm-search" id="search" type="search" placeholder="Filter by name or title" autocomplete="off">
+    <button class="icon-btn" id="themeBtn" title="Toggle theme"><svg viewBox="0 0 20 20" class="ico"><path d="M10 3a7 7 0 1 0 7 7 5.5 5.5 0 0 1-7-7z"/></svg></button>
+    <a class="ghost-btn settings-btn" href="/" title="Back to the main window">Main window</a>
+  </div>
+</header>
+
+<main class="pm-main">
+  <div class="pm-list" id="list"><div class="pm-loading"><span class="spinner"></span>Loading projects…</div></div>
+</main>
+<div class="modal-backdrop hidden" id="modal"><div class="modal" id="modalBody"></div></div>
+<div class="toasts" id="toasts"></div>
+<script src="/static/manage.js"></script>
+</body>
+</html>

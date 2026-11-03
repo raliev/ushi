@@ -1,0 +1,51 @@
+/* ushi - Projects page (on top of style.css and batch.css) */
+.pm-search { width: 240px; height: 32px; }
+.pm-main { flex: 1; width: 100%; max-width: 1080px; margin: 0 auto; padding: 16px; }
+.pm-list { display: flex; flex-direction: column; gap: 12px; }
+.pm-list > .empty { background: var(--panel); border: 1px dashed var(--line-strong); border-radius: 14px; }
+.pm-loading { display: flex; align-items: center; gap: 10px; color: var(--muted); padding: 40px; justify-content: center; }
+
+.pm-proj { flex: none; padding: 14px 16px; gap: 10px; overflow: visible; }
+.pm-head { display: flex; align-items: flex-start; gap: 16px; }
+.pm-names { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.pm-name-row { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.pm-name { font-weight: 650; font-size: 15px; letter-spacing: -.01em; color: var(--ink); text-decoration: none;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pm-name:hover { color: var(--accent); }
+.pm-live { flex: none; font-size: 11px; font-weight: 700; color: var(--rec); background: var(--rec-soft); padding: 2px 8px; border-radius: 6px; }
+.pm-title { color: var(--ink-2); font-size: 13.5px; text-decoration: none; line-height: 1.4; }
+.pm-title:hover { color: var(--accent); text-decoration: underline; }
+.pm-meta { font-size: 12px; color: var(--faint); }
+.pm-actions { display: flex; gap: 6px; flex: none; }
+.pm-actions .ico { width: 14px; height: 14px; }
+.pm-del:hover { color: var(--rec); border-color: color-mix(in srgb, var(--rec) 40%, var(--line)); }
+
+.pm-rename { display: flex; align-items: center; gap: 6px; }
+.pm-rename .field { flex: 1; min-width: 0; max-width: 360px; height: 30px; font-weight: 600; }
+.pm-rename .primary-btn { height: 30px; padding: 0 12px; font-size: 12.5px; border-radius: 8px; }
+
+.pm-sessions { display: flex; flex-direction: column; border-top: 1px solid var(--line); padding-top: 4px; }
+.pm-sess { display: grid; grid-template-columns: 220px 80px minmax(0, 1fr); align-items: center; gap: 12px; padding: 5px 0; font-size: 13px; }
+.pm-sess + .pm-sess { border-top: 1px dashed var(--line); }
+.pm-when { display: flex; gap: 10px; color: var(--ink); text-decoration: none; border-radius: 6px; }
+.pm-when:hover .pm-date { color: var(--accent); text-decoration: underline; }
+.pm-date { font-weight: 560; }
+.pm-time { color: var(--muted); font-variant-numeric: tabular-nums; }
+.pm-lines { color: var(--faint); font-size: 12px; font-variant-numeric: tabular-nums; }
+.pm-docs { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.pm-doc { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 9px 0 7px; border-radius: 7px; font-size: 12px; font-weight: 600;
+  color: var(--accent); background: var(--accent-soft); text-decoration: none; border: 1px solid transparent; }
+.pm-doc .ico { width: 13px; height: 13px; }
+.pm-doc:hover { border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.pm-doc.final { color: var(--ok); background: var(--ok-soft); }
+.pm-doc.final:hover { border-color: color-mix(in srgb, var(--ok) 45%, transparent); }
+.pm-none { color: var(--faint); font-size: 12px; }
+.pm-more { align-self: flex-start; margin-top: 4px; }
+
+@media (max-width: 760px) {
+  .pm-search { width: 140px; }
+  .pm-head { flex-direction: column; gap: 8px; }
+  .pm-sess { grid-template-columns: 1fr auto; }
+  .pm-docs { grid-column: 1 / -1; }
+}
+.modal-foot .danger-btn { height: 34px; padding: 0 15px; border-radius: 10px; font-size: 13px; }

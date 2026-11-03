@@ -1037,7 +1037,7 @@ class ChatManager:
                     msg["status"] = "streaming"
                     push(delta=d, status="streaming")
                 loop.call_soon_threadsafe(apply)
-            cfg = llm_api.config(settings)
+            cfg = llm_api.config(settings, chat=True)
             await asyncio.to_thread(llm_api.stream, cfg, [{"role": "system", "content": system}, *history], delta)
             await asyncio.sleep(0)   # let the last deltas land
             msg["status"] = "done"
@@ -1206,7 +1206,8 @@ async def ai_get():
 
 @app.post("/api/ai")
 async def ai_set(data: dict = Body(...)):
-    """{engine: claude|api, provider, model, base_url, api_key?, clear_key?}"""
+    """{engine: claude|api, provider, model, chat_model?, base_url, api_key?, clear_key?}"""
+    settings = S.load_settings()
     engine = data.get("engine", "claude")
     if engine not in ("claude", "api"):
         _err(ValueError("Bad engine"))
@@ -1217,6 +1218,10 @@ async def ai_set(data: dict = Body(...)):
             _err(ValueError("Unknown provider"))
         upd.update(api_provider=provider, api_model=(data.get("model") or "").strip(),
                    api_base_url=llm_api.normalize_base_url(provider, data.get("base_url") or ""))
+        if "chat_model" in data:
+            upd["api_chat_model"] = (data.get("chat_model") or "").strip()
+        elif provider != settings.get("api_provider"):
+            upd["api_chat_model"] = ""    # another provider's model name means nothing here
         if data.get("api_key"):
             llm_api.set_key(provider, data["api_key"])
         elif data.get("clear_key"):
@@ -1319,6 +1324,79 @@ async def create_project(data: dict = Body(...)):
     for sub in ("transcripts", "screenshots", "docs"):
         (S.PROJECTS_DIR / name / sub).mkdir(parents=True, exist_ok=True)
     return {"name": name}
+
+
+@app.get("/api/projects/overview")
+async def projects_overview():
+    """Every project with its sessions, Beautified versions and latest document title (Manage page)."""
+    def build():
+        out = []
+        for p in S.list_projects():
+            try:
+                o = S.project_overview(p["name"])
+            except ValueError:
+                continue    # a folder name the app can't handle
+            o["live"] = recorder.active and recorder.project == p["name"]
+            out.append(o)
+        return out
+    return await asyncio.to_thread(build)
+
+
+def _project_busy(project: str) -> str:
+    """Why a project can't be renamed or deleted right now ('' when it can)."""
+    if recorder.active and recorder.project == project:
+        return "It is recording now"
+    if any(p == project and j["status"] == "running" for (p, _), j in jobs.jobs.items()):
+        return "Beautify is running in it"
+    if any(p == project for p, _ in chat.busy):
+        return "A chat answer is still coming"
+    if batch_queue and any(t.get("project") == project and batch.task_state(t) not in ("done", "hold")
+                           for t in batch_queue.tasks):
+        return "The batch queue is still working on it"
+    return ""
+
+
+@app.post("/api/projects/{project}/rename")
+async def project_rename(project: str, data: dict = Body(...)):
+    try:
+        project = S.safe_name(project)
+        why = _project_busy(project)
+        if why:
+            raise ValueError(f"Can't rename “{project}”: {why.lower()}")
+        new = await asyncio.to_thread(S.rename_project, project, data.get("name", ""))
+    except (ValueError, OSError) as e:
+        _err(e)
+    for key in [k for k in jobs.jobs if k[0] == project]:
+        jobs.jobs.pop(key, None)
+    if batch_queue:
+        for t in batch_queue.tasks:
+            if t.get("project") == project:
+                t["project"] = new
+        batch_queue.save()
+    hub.emit({"type": "projects_changed", "renamed": {project: new}})
+    return {"name": new}
+
+
+@app.delete("/api/projects/{project}")
+async def project_delete(project: str):
+    """Moves the project folder to the Trash (macOS) or .webui/trash/."""
+    try:
+        project = S.safe_name(project)
+        why = _project_busy(project)
+        if why:
+            raise ValueError(f"Can't delete “{project}”: {why.lower()}")
+        dst = await asyncio.to_thread(S.trash_project, project)
+    except (ValueError, OSError) as e:
+        _err(e)
+    for key in [k for k in jobs.jobs if k[0] == project]:
+        jobs.jobs.pop(key, None)
+    hub.emit({"type": "projects_changed", "deleted": project})
+    return {"trash": str(dst)}
+
+
+@app.get("/manage")
+async def manage_page():
+    return FileResponse(WEB_DIR / "manage.html", headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/api/projects/{project}/settings")
@@ -1878,14 +1956,24 @@ async def hide_similar(project: str, sid: str, data: dict = Body(...)):
 
 # Capture area
 
-def _capture_info() -> dict:
+def _capture_info(preview_error: str = "") -> dict:
     cfg = S._read_json(CAPTURE_CONFIG, {"mode": "full"})
     return {"config": cfg, "preview": f"/api/capture/preview?t={CAPTURE_PREVIEW.stat().st_mtime}"
-            if CAPTURE_PREVIEW.exists() else None}
+            if CAPTURE_PREVIEW.exists() else None, "preview_error": preview_error}
 
 
-async def _refresh_preview():
-    await run_helper("--capture", str(CAPTURE_CONFIG), str(CAPTURE_PREVIEW), timeout=20)
+async def _refresh_preview() -> str:
+    """Capture the preview; '' when it worked, else why not. Without Screen Recording permission
+    (or while macOS still asks for it) the capture fails or hangs: report it, don't wait long."""
+    rc, out, err = await run_helper("--capture", str(CAPTURE_CONFIG), str(CAPTURE_PREVIEW), timeout=10)
+    if rc == 0 and "OK:" in out:
+        return ""
+    print(f"[capture] preview failed (rc {rc}): {(err or out).strip()[-300:]}", file=sys.stderr)
+    if err == "timeout":
+        return "The screen capture didn't answer in 10 s. If macOS is asking about Screen Recording, allow it."
+    return ("Could not capture the screen: allow Screen Recording for this app (System Settings → "
+            "Privacy & Security → Screen Recording), then press Refresh preview." if native_helpers.IS_MAC
+            else f"Could not capture the screen: {(err or out).strip()[-200:] or f'exit code {rc}'}")
 
 
 @app.get("/api/capture")
@@ -1898,16 +1986,14 @@ async def capture_set(cfg: dict = Body(...)):
     if cfg.get("mode") not in ("full", "region", "window"):
         _err(ValueError("Bad capture mode"))
     S._write_json(CAPTURE_CONFIG, cfg)
-    await _refresh_preview()
-    return _capture_info()
+    return _capture_info(await _refresh_preview())
 
 
 @app.post("/api/capture/preview")
 async def capture_preview_refresh():
     if not CAPTURE_CONFIG.exists():
         S._write_json(CAPTURE_CONFIG, {"mode": "full"})
-    await _refresh_preview()
-    return _capture_info()
+    return _capture_info(await _refresh_preview())
 
 
 @app.get("/api/capture/preview")
@@ -1929,14 +2015,13 @@ async def capture_select(data: dict = Body(...)):
     obj = json.loads(payload)
     cfg = {"mode": "region", "rect": obj["rect"]} if kind == "REGION" else {"mode": "window", **obj}
     S._write_json(CAPTURE_CONFIG, cfg)
-    await _refresh_preview()
-    return _capture_info()
+    return _capture_info(await _refresh_preview())
 
 
 @app.post("/api/capture/detect-video")
 async def capture_detect_video():
     """Watch the capture area for a few seconds, find the playing video in it and crop auto
-    frames to it (frames_crop in the capture config). Screenshots keep the whole area."""
+    frames and Ctrl+Shift+S screenshots to it (frames_crop in the capture config)."""
     import cv2
     import video_detect
     if not CAPTURE_CONFIG.exists():
@@ -1969,8 +2054,7 @@ async def capture_detect_video():
     cfg["frames_crop"] = {k: res[k] for k in ("x", "y", "w", "h")}
     cfg["frames_crop_method"] = res["method"]
     S._write_json(CAPTURE_CONFIG, cfg)
-    await _refresh_preview()
-    return _capture_info()
+    return _capture_info(await _refresh_preview())
 
 
 @app.post("/api/capture/crop")
