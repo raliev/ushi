@@ -1,5 +1,5 @@
 /* ushi - Batch page: the queue of videos (batch.py runs it inside server.py).
- * Add: paste links (one per line, or CSV rows url,project,auto_frames,beautify; YouTube, .m3u8,
+ * Add: paste links (one per line, or CSV rows url,project,auto_frames,beautify; YouTube, any site yt-dlp knows, .m3u8,
  * or a whole "Copy as cURL" command for a stream behind a login) → set up each
  * video → tasks. Each task: download → transcribe → beautify; a stage that failed or was
  * interrupted is "on hold" with its reason and a Restart button. */
@@ -66,7 +66,7 @@ function renderAdd() {
   if (!d) {
     el.innerHTML = `
       <div class="b-step"><span class="b-num">1</span><h2>Add videos</h2></div>
-      <p class="b-help">One link per line: YouTube, or a video stream (<span class="mono">.m3u8</span>). CSV rows work too: <span class="mono">url,project,auto_frames,beautify</span></p>
+      <p class="b-help">One link per line: YouTube, another video site yt-dlp knows (VK Video, Vimeo, Rutube…), or a video stream (<span class="mono">.m3u8</span>). CSV rows work too: <span class="mono">url,project,auto_frames,beautify</span></p>
       <p class="b-help">A video behind a login: open it in the browser, DevTools → Network → filter <span class="mono">m3u8</span> → right-click the request → Copy → <b>Copy as cURL (bash)</b>, and paste the whole command here. Its headers (Referer, cookies) go along with the download. Prefer <span class="mono">playlist.m3u8</span> over <span class="mono">480p/video.m3u8</span>: it has every quality, the best one is taken.</p>
       <textarea class="field b-urls" id="urls" rows="9" spellcheck="false" placeholder="https://www.youtube.com/watch?v=…&#10;https://…/playlist.m3u8&#10;curl 'https://…/playlist.m3u8' -H 'referer: …'">${esc(st.text)}</textarea>
       <div class="b-foot"><span class="b-help" id="urlCount"></span><div class="spacer"></div>
@@ -222,7 +222,7 @@ function taskCard(t) {
 function renderList() {
   const list = $('#list'), tasks = st.tasks;
   if (!tasks.length) {
-    list.innerHTML = `<div class="empty"><h3>The queue is empty</h3><p>Add YouTube or .m3u8 links on the left. Each video is downloaded, transcribed and (optionally) beautified in its own project.</p></div>`;
+    list.innerHTML = `<div class="empty"><h3>The queue is empty</h3><p>Add YouTube, other video sites or .m3u8 links on the left. Each video is downloaded, transcribed and (optionally) beautified in its own project.</p></div>`;
   } else {
     // keep an open log scrolled to its end
     list.innerHTML = tasks.map(taskCard).join('');

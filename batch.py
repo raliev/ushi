@@ -178,11 +178,13 @@ def parse_rows(text: str) -> list[dict]:
 def stream_id(url: str) -> str:
     """A stable id for a stream link: the video's UUID in the path (Bunny, Vimeo-like CDNs keep one
     per video, the same for its playlist.m3u8 and 480p/video.m3u8), else a hash of the link."""
-    path = urlsplit(url).path
-    m = UUID_RE.search(path)
+    parts = urlsplit(url)
+    m = UUID_RE.search(parts.path)
     if m:
         return m.group(0).lower()
-    return hashlib.sha1(f"{urlsplit(url).netloc}{path}".encode()).hexdigest()[:12]
+    # a stream's query is a signature that changes; a page's may be what picks the video (?v=...)
+    key = parts.path if parts.path.lower().endswith(STREAM_SUFFIXES) else f"{parts.path}?{parts.query}"
+    return hashlib.sha1(f"{parts.netloc}{key}".encode()).hexdigest()[:12]
 
 
 def check_spec(spec: dict) -> dict:
@@ -199,10 +201,8 @@ def check_spec(spec: dict) -> dict:
     else:
         parts = urlsplit(url)
         if parts.scheme not in ("http", "https") or not parts.netloc:
-            raise ValueError(f"Not a YouTube, .m3u8 or video link: {url!r}")
-        if not parts.path.lower().endswith(STREAM_SUFFIXES) and not headers:
-            raise ValueError(f"Not a YouTube, .m3u8 or video link: {url!r} "
-                             "(for another page, copy its video request as cURL)")
+            raise ValueError(f"Not a web link: {url!r}")
+        # any other page (VK Video, Vimeo, ...) is yt-dlp's to recognize: it fails the download if it can't
         kind, vid = "stream", stream_id(url)
     project = str(spec.get("project") or "").strip() or (vid if kind == "youtube" else vid[:8])
     S.safe_name(project)        # letters, digits, . _ - and spaces
