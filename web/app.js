@@ -592,7 +592,8 @@ function mediaTarget() {
   const r = st.recorder, s = st.settings;
   if (r.active && isFileKind(r.source)) {
     const o = r.options || {};
-    return o.source_file ? { project: r.project, name: o.source_file, kind: r.source, live: true } : null;
+    // source_media: a batch task's local file, read where it is (not in the project's audio/)
+    return o.source_file ? { project: r.project, name: o.source_file, kind: r.source, live: true, url: o.source_media } : null;
   }
   if ((r.active || r.state === 'error') && !st.starting) return null;
   if (isFileKind(s.source) && s.source_file && st.project)
@@ -608,7 +609,7 @@ function renderMedia() {
     panel.classList.add('off');
     return;
   }
-  const key = `${t.project}/${t.name}`;
+  const key = t.url || `${t.project}/${t.name}`;
   const file = (audioSrc.files || []).find(f => f.name === t.name);
   panel.classList.remove('off');
   panel.classList.toggle('audio', !(file ? file.video : VIDEO_RE.test(t.name)));
@@ -632,7 +633,7 @@ function buildMedia(t, key) {
   media.start = t.live ? (+o.start || 0) : 0;
   media.end = t.live && o.end != null ? +o.end : null;
   panel.innerHTML = `
-    <video id="mVideo" preload="metadata" playsinline src="${esc(mediaUrl(t.project, t.name))}"></video>
+    <video id="mVideo" preload="metadata" playsinline src="${esc(t.url || mediaUrl(t.project, t.name))}"></video>
     <div class="media-side">
       <div class="m-title"><b>${esc(t.name)}</b><span class="state-sub" id="mState"></span></div>
       <div class="m-track" id="mTrack" title="Click to move the player here"><div class="m-range" id="mRange"></div><div class="m-done" id="mDone"></div><div class="m-head" id="mHead"></div></div>

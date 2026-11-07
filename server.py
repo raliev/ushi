@@ -177,7 +177,9 @@ class Recorder:
         self.state, self.detail = state, detail
         hub.emit({"type": "recorder", **self.snapshot()})
 
-    async def start(self, opts: dict):
+    async def start(self, opts: dict, source_path: Path | None = None):
+        """source_path: a file outside the project's audio/ (the batch queue's local files);
+        never taken from the request, which can only name a file in audio/."""
         if self.active and self.state == "ready":
             # Models are already loaded (the "ready" prompt was closed): start right away,
             # with the live-editable options as they are now.
@@ -240,7 +242,7 @@ class Recorder:
                 raise HTTPException(400, f"App audio needs audio_helper ({native_helpers.audio_build_hint()})")
             cmd += ["--source", f"{source}:{app_id}"]
         elif source in FILE_SOURCES:
-            path = audio_file_path(project, str(opts.get("source_file") or ""))
+            path = source_path or audio_file_path(project, str(opts.get("source_file") or ""))
             cmd += ["--source", f"file:{path}"]
             if not opts.get("batch"):
                 # A file's timestamps start at 00:00:00: a new session (the batch queue continues
@@ -778,11 +780,15 @@ class ServerRunner:
         o = batch.recognize_args(task, stage, S.load_settings())
         if o["continue_sid"] and not S.transcript_path(task["project"], o["continue_sid"]).exists():
             o["continue_sid"] = ""
+        local = task.get("kind") == "file"
         await recorder.start({
             "project": task["project"], "engine": o["engine"], "lang": o["lang"], "speakers": o["speakers"],
-            "pause": o["pause"], "minutes": 600, "source": "video", "source_file": file.name,
-            "source_name": task.get("title") or file.name, "auto_frames": o["auto_frames"],
-            "start": o["start"], "continue_sid": o["continue_sid"], "batch": task["id"]})
+            "pause": o["pause"], "minutes": 600, "source": "file" if task.get("audio_only") else "video",
+            "source_file": file.name, "source_name": task.get("title") or file.name, "auto_frames": o["auto_frames"],
+            "start": o["start"], "continue_sid": o["continue_sid"], "batch": task["id"],
+            # a local file stays where it is: the main window's player gets it from the queue
+            **({"source_media": f"/api/batch/tasks/{task['id']}/media"} if local else {})},
+            source_path=file if local else None)
         proc = recorder.proc
         update(note="", line="Starting the recognizer")
         try:
@@ -1546,8 +1552,11 @@ MEDIA_TYPES = {".mp4": "video/mp4", ".m4v": "video/mp4", ".mov": "video/quicktim
 
 @app.get("/api/projects/{project}/audio/{name}/media")
 async def audio_media(project: str, name: str, request: Request):
+    return media_response(audio_file_path(project, name), request)
+
+
+def media_response(path: Path, request: Request):
     """The file for the player, with Range support (seeking; Starlette 0.38 has none)."""
-    path = audio_file_path(project, name)
     size = path.stat().st_size
     ctype = MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream")
     m = re.match(r"bytes=(\d*)-(\d*)$", request.headers.get("range", "").strip())
@@ -1747,6 +1756,53 @@ async def batch_list():
 async def batch_parse(data: dict = Body(...)):
     """The Add form's text (links, CSV rows, cURL commands) → rows, each with its id or error."""
     return {"rows": batch.preview_rows(str(data.get("text") or ""))}
+
+
+@app.post("/api/batch/pick")
+async def batch_pick():
+    """The system's Open dialog (the server runs on this machine) → paths of local video /
+    audio files. A browser can't tell a file's path, and these files are read in place."""
+    exts = sorted(s.lstrip(".") for s in batch.LOCAL_VIDEO_SUFFIXES + batch.LOCAL_AUDIO_SUFFIXES)
+    if native_helpers.IS_MAC:
+        types = ", ".join(f'"{e}"' for e in exts)
+        cmd = ["osascript", "-e", "activate", "-e",
+               f'set fs to choose file with prompt "Video or audio files to transcribe" of type {{{types}}} '
+               'with multiple selections allowed', "-e",
+               'set out to ""', "-e", 'repeat with f in fs', "-e",
+               'set out to out & POSIX path of f & linefeed', "-e", "end repeat", "-e", "return out"]
+    elif native_helpers.IS_WINDOWS:
+        filt = "Video and audio|" + ";".join(f"*.{e}" for e in exts) + "|All files|*.*"
+        cmd = ["powershell", "-NoProfile", "-STA", "-Command",
+               "Add-Type -AssemblyName System.Windows.Forms;"
+               "$d = New-Object System.Windows.Forms.OpenFileDialog; $d.Multiselect = $true;"
+               f"$d.Title = 'Video or audio files to transcribe'; $d.Filter = '{filt}';"
+               "$o = New-Object System.Windows.Forms.Form; $o.TopMost = $true;"
+               "[Console]::OutputEncoding = [Text.Encoding]::UTF8;"
+               "if ($d.ShowDialog($o) -eq 'OK') { $d.FileNames -join \"`n\" }"]
+    else:
+        cmd = ["zenity", "--file-selection", "--multiple", "--separator=\n",
+               "--title=Video or audio files to transcribe",
+               "--file-filter=Video and audio | " + " ".join(f"*.{e}" for e in exts)]
+    try:
+        proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE,
+                                                    stderr=asyncio.subprocess.PIPE)
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=600)
+    except FileNotFoundError:
+        raise HTTPException(501, "No file dialog here: paste the files' full paths instead")
+    except asyncio.TimeoutError:
+        proc.kill()
+        return {"paths": []}
+    # cancelling the dialog is a non-zero exit with nothing on stdout
+    return {"paths": [l.strip() for l in out.decode("utf-8", "replace").splitlines() if l.strip()]}
+
+
+@app.get("/api/batch/tasks/{task_id}/media")
+async def batch_media(task_id: str, request: Request):
+    """A local file of the queue, for the main window's player (it is not in the project)."""
+    task = batch_queue.get(task_id)
+    if not task or task.get("kind") != "file" or not Path(task["url"]).is_file():
+        raise HTTPException(404, "No such file in the queue")
+    return media_response(Path(task["url"]), request)
 
 
 @app.post("/api/batch/tasks")

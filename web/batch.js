@@ -1,6 +1,7 @@
 /* ushi - Batch page: the queue of videos (batch.py runs it inside server.py).
  * Add: paste links (one per line, or CSV rows url,project,auto_frames,beautify; YouTube, any site yt-dlp knows, .m3u8,
- * or a whole "Copy as cURL" command for a stream behind a login) → set up each
+ * or a whole "Copy as cURL" command for a stream behind a login; local video / audio files: Choose files, read
+ * in place, never copied) → set up each
  * video → tasks. Each task: download → transcribe → beautify; a stage that failed or was
  * interrupted is "on hold" with its reason and a Restart button. */
 'use strict';
@@ -46,12 +47,17 @@ const st = { tasks: [], open: new Set(), draft: null, text: '', rows: [] };
 const NAME_RE = /^[A-Za-z0-9._ -]+$/;
 const host = u => { try { return new URL(u).host; } catch (_) { return ''; } };
 // YouTube has a thumbnail per id; a stream has none we could load (its CDN wants the site's Referer)
-const thumbHtml = (kind, id, cls = 'b-thumb') => (kind === 'stream'
-  ? `<div class="${cls} b-thumb-stream" title="Video stream">▶</div>`
-  : `<img class="${cls}" src="https://i.ytimg.com/vi/${encodeURIComponent(id)}/mqdefault.jpg" alt="" loading="lazy">`);
-const srcLabel = r => (r.kind === 'stream'
-  ? `${host(r.url)}${r.header_names && r.header_names.length ? ` · ${r.header_names.length} header${r.header_names.length > 1 ? 's' : ''} from cURL` : ''}`
-  : r.video_id);
+const thumbHtml = (kind, id, cls = 'b-thumb', audio = false) => (kind === 'file'
+  ? `<div class="${cls} b-thumb-stream" title="Local ${audio ? 'audio' : 'video'} file">${audio ? '♪' : '▶'}</div>`
+  : kind === 'stream'
+    ? `<div class="${cls} b-thumb-stream" title="Video stream">▶</div>`
+    : `<img class="${cls}" src="https://i.ytimg.com/vi/${encodeURIComponent(id)}/mqdefault.jpg" alt="" loading="lazy">`);
+const fmtSize = b => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.max(1, Math.round(b / 1e6))} MB`);
+const srcLabel = r => (r.kind === 'file'
+  ? `${r.url}${r.size ? ` · ${fmtSize(r.size)}` : ''}`
+  : r.kind === 'stream'
+    ? `${host(r.url)}${r.header_names && r.header_names.length ? ` · ${r.header_names.length} header${r.header_names.length > 1 ? 's' : ''} from cURL` : ''}`
+    : r.video_id);
 
 let parseSeq = 0;
 async function parseText(text) {
@@ -67,9 +73,11 @@ function renderAdd() {
     el.innerHTML = `
       <div class="b-step"><span class="b-num">1</span><h2>Add videos</h2></div>
       <p class="b-help">One link per line: YouTube, another video site yt-dlp knows (VK Video, Vimeo, Rutube…), or a video stream (<span class="mono">.m3u8</span>). CSV rows work too: <span class="mono">url,project,auto_frames,beautify</span></p>
+      <p class="b-help">Video or audio files on this computer: <b>Choose files…</b> (or paste their full paths, one per line). They are read where they are, nothing is copied: keep them there until the transcription is done.</p>
       <p class="b-help">A video behind a login: open it in the browser, DevTools → Network → filter <span class="mono">m3u8</span> → right-click the request → Copy → <b>Copy as cURL (bash)</b>, and paste the whole command here. Its headers (Referer, cookies) go along with the download. Prefer <span class="mono">playlist.m3u8</span> over <span class="mono">480p/video.m3u8</span>: it has every quality, the best one is taken.</p>
       <textarea class="field b-urls" id="urls" rows="9" spellcheck="false" placeholder="https://www.youtube.com/watch?v=…&#10;https://…/playlist.m3u8&#10;curl 'https://…/playlist.m3u8' -H 'referer: …'">${esc(st.text)}</textarea>
-      <div class="b-foot"><span class="b-help" id="urlCount"></span><div class="spacer"></div>
+      <div class="b-foot"><button class="ghost-btn" id="pickBtn" title="Pick video / audio files on this computer: they are transcribed where they are, not copied">Choose files…</button>
+        <span class="b-help" id="urlCount"></span><div class="spacer"></div>
         <button class="primary-btn" id="nextBtn">Next: set up</button></div>`;
     const ta = $('#urls');
     let timer = 0;
@@ -92,9 +100,21 @@ function renderAdd() {
     ta.oninput = () => count(); count(true);
     ta.onkeydown = e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !$('#nextBtn').disabled) $('#nextBtn').click(); };
     $('#nextBtn').onclick = () => { st.draft = st.rows.map(r => ({ ...r })); renderAdd(); };
+    $('#pickBtn').onclick = async () => {
+      const b = $('#pickBtn'); b.disabled = true;
+      try {
+        const { paths } = await api('POST', '/api/batch/pick');
+        if (paths.length) {
+          const have = ta.value.replace(/\s+$/, '');
+          ta.value = (have ? `${have}\n` : '') + paths.join('\n') + '\n';
+          count(true);
+        }
+      } catch (e) { fail(e); }
+      b.disabled = false;
+    };
     return;
   }
-  const allOn = k => d.every(r => r[k]);
+  const allOn = k => d.every(r => r[k] || (k === 'auto_frames' && r.audio_only));
   el.innerHTML = `
     <div class="b-step"><span class="b-num">2</span><h2>Set up ${d.length} video${d.length > 1 ? 's' : ''}</h2></div>
     <p class="b-help">Each video gets its own project. Name it now: the video id is only a placeholder.</p>
@@ -105,12 +125,12 @@ function renderAdd() {
     </div>
     <div class="b-cfg">${d.map((r, i) => `
       <div class="b-cfg-row" data-i="${i}">
-        ${thumbHtml(r.kind, r.video_id)}
+        ${thumbHtml(r.kind, r.video_id, 'b-thumb', r.audio_only)}
         <div class="b-cfg-main">
           <input class="field b-proj" value="${esc(r.project)}" placeholder="Project name" title="Project (folder) for this video: letters, digits, spaces, . _ -">
           <div class="b-cfg-url mono" title="${esc(r.url)}">${esc(srcLabel(r))}${projectExists(r.project) ? ' · <span class="b-note">project exists: a new session is added</span>' : ''}</div>
         </div>
-        <label class="switch" title="Auto frames: keep the frames of the video that show something new"><input type="checkbox" data-k="auto_frames" ${r.auto_frames ? 'checked' : ''}><span class="knob"></span></label>
+        <label class="switch" title="${r.audio_only ? 'An audio file has no frames' : 'Auto frames: keep the frames of the video that show something new'}"><input type="checkbox" data-k="auto_frames" ${r.auto_frames ? 'checked' : ''} ${r.audio_only ? 'disabled' : ''}><span class="knob"></span></label>
         <label class="switch" title="Beautify: build the annotated document when the transcript is ready"><input type="checkbox" data-k="beautify" ${r.beautify ? 'checked' : ''}><span class="knob"></span></label>
         <button class="icon-btn b-x" title="Leave this one out">✕</button>
       </div>`).join('')}</div>
@@ -123,7 +143,7 @@ function renderAdd() {
     row.querySelectorAll('input[data-k]').forEach(c => { c.onchange = () => { r[c.dataset.k] = c.checked; }; });
     $('.b-x', row).onclick = () => { d.splice(+row.dataset.i, 1); if (!d.length) st.draft = null; renderAdd(); };
   });
-  $('#allAf').onchange = e => { d.forEach(r => { r.auto_frames = e.target.checked; }); renderAdd(); };
+  $('#allAf').onchange = e => { d.forEach(r => { r.auto_frames = e.target.checked && !r.audio_only; }); renderAdd(); };
   $('#allBf').onchange = e => { d.forEach(r => { r.beautify = e.target.checked; }); renderAdd(); };
   $('#backBtn').onclick = () => { st.draft = null; renderAdd(); };
   $('#addBtn').onclick = async () => {
@@ -157,6 +177,8 @@ const ICONS = {
 
 function stagePill(t, name) {
   const s = t.stages[name];
+  if (name === 'download' && t.kind === 'file')
+    return `<div class="b-stage done" title="${esc(t.url)}: read where it is, not copied">${ICONS.done}<span>Local file</span></div>`;
   const pct = s.status === 'running' && s.progress != null ? ` ${Math.round(s.progress)}%` : '';
   const icon = s.status === 'running' ? '<span class="spinner tiny"></span>' : (ICONS[s.status] || '<span class="b-dot"></span>');
   const waiting = s.status === 'pending' && t.state === `waiting-${name}`;
@@ -202,7 +224,7 @@ function taskCard(t) {
     sub ? `subtitles: ${sub.lang}${sub.auto ? ' (auto)' : ''}` : ''].filter(Boolean).join(' · ');
   const sid = t.stages.recognize.sid;
   return `<article class="b-task ${t.state}" data-id="${t.id}">
-    ${t.kind === 'stream' ? `<div class="b-thumb-link">${thumbHtml('stream')}</div>`
+    ${t.kind === 'stream' || t.kind === 'file' ? `<div class="b-thumb-link">${thumbHtml(t.kind, '', 'b-thumb', t.audio_only)}</div>`
     : `<a class="b-thumb-link" href="${esc(t.url)}" target="_blank" rel="noopener" title="Open on YouTube">${thumbHtml('youtube', t.video_id)}</a>`}
     <div class="b-body">
       <div class="b-row1">
@@ -222,7 +244,7 @@ function taskCard(t) {
 function renderList() {
   const list = $('#list'), tasks = st.tasks;
   if (!tasks.length) {
-    list.innerHTML = `<div class="empty"><h3>The queue is empty</h3><p>Add YouTube, other video sites or .m3u8 links on the left. Each video is downloaded, transcribed and (optionally) beautified in its own project.</p></div>`;
+    list.innerHTML = `<div class="empty"><h3>The queue is empty</h3><p>Add YouTube, other video sites, .m3u8 links or local files on the left. Each video is downloaded, transcribed and (optionally) beautified in its own project.</p></div>`;
   } else {
     // keep an open log scrolled to its end
     list.innerHTML = tasks.map(taskCard).join('');

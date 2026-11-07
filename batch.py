@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Batch: a queue of videos (YouTube, or HLS .m3u8 streams), each  download (yt-dlp) → transcribe → Beautify.
+"""Batch: a queue of videos (YouTube, HLS .m3u8 streams, local video / audio files), each
+download (yt-dlp) → transcribe → Beautify.
 
 Every task gets its own project (projects/<project>/), the video goes to its audio/ folder.
 Stages:
@@ -15,6 +16,8 @@ project defaults to the video id, auto_frames / beautify to 1; 1/0, yes/no, true
 url is a YouTube link, or a stream (.m3u8) / video file link. A whole cURL command works as
 well (the browser's DevTools → Network → the .m3u8 request → Copy as cURL): its headers
 (Referer, Cookie, ...) go along with every request, so videos behind a login download too.
+url can also be a local video / audio file (an absolute path): nothing is downloaded or
+copied, the file is read where it is (the download stage is skipped).
 
   python batch.py run tasks.csv [--parallel 3]   # standalone; state in tasks.csv.state.json,
                                                  # running it again resumes / retries held stages
@@ -53,6 +56,9 @@ STAGES = ("download", "recognize", "beautify")
 DEFAULT_PARALLEL = 3
 LOG_LINES = 200
 VIDEO_SUFFIXES = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
+# local files the recognizer reads (ffmpeg): video, and audio (no frames from those)
+LOCAL_VIDEO_SUFFIXES = VIDEO_SUFFIXES + (".avi",)
+LOCAL_AUDIO_SUFFIXES = (".mp3", ".m4a", ".wav", ".aac", ".flac", ".ogg", ".opus", ".aif", ".aiff", ".caf", ".wma")
 
 YT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 YT_URL_RE = re.compile(
@@ -156,6 +162,21 @@ def split_entries(text: str) -> list[str]:
     return out
 
 
+def local_path(text: str) -> Path | None:
+    """A local file path (absolute, ~/..., file://...) → Path; None for anything else (a link)."""
+    t = (text or "").strip().strip('"\'')
+    if t.lower().startswith("file://"):
+        from urllib.parse import unquote
+        t = unquote(urlsplit(t).path)
+        if re.match(r"^/[A-Za-z]:/", t):        # file:///C:/...
+            t = t[1:]
+    if t.startswith("~"):
+        t = os.path.expanduser(t)
+    if t.startswith("/") or re.match(r"^[A-Za-z]:[\\/]", t) or t.startswith("\\\\"):
+        return Path(t)
+    return None
+
+
 def parse_rows(text: str) -> list[dict]:
     """CSV text / links / cURL commands → task specs {url, headers, project, auto_frames, beautify}.
     Skips a header and blanks."""
@@ -166,6 +187,10 @@ def parse_rows(text: str) -> list[dict]:
                 out.append({**parse_curl(entry), "project": "", "auto_frames": True, "beautify": True})
             except ValueError as e:
                 out.append({"url": entry.split()[1] if len(entry.split()) > 1 else entry, "error": str(e)})
+            continue
+        lp = local_path(entry)
+        if lp and lp.is_file():         # a whole line that is a file: its name may have commas
+            out.append({"url": str(lp), "project": "", "auto_frames": True, "beautify": True})
             continue
         row = [c.strip() for c in next(csv.reader([entry]), [])]
         if not row or not row[0] or row[0].lower() == "url":
@@ -187,11 +212,44 @@ def stream_id(url: str) -> str:
     return hashlib.sha1(f"{parts.netloc}{key}".encode()).hexdigest()[:12]
 
 
+def file_id(path: Path) -> str:
+    return hashlib.sha1(str(path).encode()).hexdigest()[:12]
+
+
+_TRANSLIT = dict(zip("абвгдеёжзийклмнопрстуфхцчшщъыьэюя",
+                     ["a", "b", "v", "g", "d", "e", "e", "zh", "z", "i", "y", "k", "l", "m", "n", "o", "p", "r",
+                      "s", "t", "u", "f", "kh", "ts", "ch", "sh", "shch", "", "y", "", "e", "yu", "ya"]))
+
+
+def project_from_name(name: str) -> str:
+    """A file name → a project name the folder rules allow (Latin letters, digits, . _ - and spaces)."""
+    name = "".join(_TRANSLIT.get(c.lower(), c).capitalize() if c.isupper() and c.lower() in _TRANSLIT
+                   else _TRANSLIT.get(c, c) for c in name)
+    clean = re.sub(r"\s+", " ", re.sub(r"[^A-Za-z0-9._ -]+", " ", name))
+    return clean[:60].strip(" ._") or "file"
+
+
 def check_spec(spec: dict) -> dict:
     """Validated task spec; raises ValueError with a readable reason."""
     if spec.get("error"):
         raise ValueError(spec["error"])
     url = str(spec.get("url") or "").strip()
+    lp = local_path(url)
+    if lp:
+        lp = lp.resolve()
+        suffix = lp.suffix.lower()
+        if suffix not in LOCAL_VIDEO_SUFFIXES + LOCAL_AUDIO_SUFFIXES:
+            raise ValueError(f"Not a video or audio file this app can read: {lp.name}")
+        if not lp.is_file():
+            raise ValueError(f"File not found: {lp}")
+        audio = suffix in LOCAL_AUDIO_SUFFIXES
+        project = str(spec.get("project") or "").strip() or project_from_name(lp.stem)
+        S.safe_name(project)
+        return {"url": str(lp), "kind": "file", "video_id": file_id(lp), "project": project,
+                "audio_only": audio, "size": lp.stat().st_size,
+                # an audio file has no picture: auto frames would capture the screen instead
+                "auto_frames": False if audio else bool(spec.get("auto_frames", True)),
+                "beautify": bool(spec.get("beautify", True))}
     headers = {str(k): str(v) for k, v in (spec.get("headers") or {}).items()}
     vid = youtube_id(url)
     if vid:
@@ -250,11 +308,14 @@ def public_task(task: dict) -> dict:
 def new_task(spec: dict) -> dict:
     spec = check_spec(spec)
     now = time.time()
+    local = spec["kind"] == "file"
     return {
-        "id": uuid.uuid4().hex[:10], **spec, "title": "", "created": now,
+        "id": uuid.uuid4().hex[:10], **spec, "title": Path(spec["url"]).name if local else "", "created": now,
         "stages": {
-            "download": {"status": "pending", "ready": now},
-            "recognize": {"status": "pending"},
+            # a local file is read where it is: nothing to download
+            "download": {"status": "skipped", "file": spec["url"], "finished": now} if local
+            else {"status": "pending", "ready": now},
+            "recognize": {"status": "pending", **({"ready": now} if local else {})},
             "beautify": {"status": "pending" if spec["beautify"] else "skipped"},
         },
     }
@@ -457,7 +518,7 @@ class Orchestrator:
     def _eligible(self, stage: str) -> list[dict]:
         prev = {"recognize": "download", "beautify": "recognize"}.get(stage)
         out = [t for t in self.q.tasks if t["stages"][stage]["status"] == "pending"
-               and (prev is None or t["stages"][prev]["status"] == "done")
+               and (prev is None or t["stages"][prev]["status"] in ("done", "skipped"))
                and (t["id"], stage) not in self.running]
         # first come, first served: when the task got to this stage
         return sorted(out, key=lambda t: t["stages"][stage].get("ready") or t["created"])
@@ -663,7 +724,14 @@ class Orchestrator:
 
     async def _recognize(self, task: dict):
         s = task["stages"]["recognize"]
-        file = S.project_dir(task["project"]) / "audio" / task["stages"]["download"]["file"]
+        if task.get("kind") == "file":
+            file = Path(task["url"])
+            if not file.is_file():
+                s.update(status="hold", error=f"The file is not there: {file}\n(moved, renamed, or on a disk that "
+                                              "is not connected?) Put it back and restart the transcription.")
+                return
+        else:
+            file = S.project_dir(task["project"]) / "audio" / task["stages"]["download"]["file"]
         if not file.is_file():
             s.update(status="hold", error=f"The video is gone: {file} (restart the download)")
             task["stages"]["download"]["status"] = "hold"
