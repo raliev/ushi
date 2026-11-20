@@ -216,8 +216,15 @@ final class Tap {
         ]
         try check(AudioHardwareCreateAggregateDevice(dict as CFDictionary, &aggID), "create aggregate device")
 
-        guard var asbd = getValue(tapID, kAudioTapPropertyFormat, AudioStreamBasicDescription()),
-              let inFmt = AVAudioFormat(streamDescription: &asbd),
+        guard var asbd = getValue(tapID, kAudioTapPropertyFormat, AudioStreamBasicDescription()) else { throw err("tap format") }
+        // The tap may report 48 kHz while the device runs at another rate (AirPods in a call:
+        // 24 kHz). The IO proc is clocked by the aggregate device, so its rate is the real one.
+        if let rate = getValue(aggID, kAudioDevicePropertyNominalSampleRate, Float64(0)), rate > 0,
+           rate != asbd.mSampleRate {
+            log("tap reports \(Int(asbd.mSampleRate)) Hz, device runs at \(Int(rate)) Hz")
+            asbd.mSampleRate = rate
+        }
+        guard let inFmt = AVAudioFormat(streamDescription: &asbd),
               let outFmt = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: kOutRate, channels: 1, interleaved: false),
               let conv = AVAudioConverter(from: inFmt, to: outFmt) else { throw err("tap format") }
         conv.downmix = true
@@ -262,7 +269,7 @@ final class Capture {
     let bundle: String
     let fifo = Fifo()
     var tap: Tap?
-    var signature = ""          // playing process objects + output device of the current tap
+    var signature = ""          // playing process objects + output device and rate of the current tap
     var lastStatus = ""
     let out = FileHandle.standardOutput
     var written = 0
@@ -270,12 +277,13 @@ final class Capture {
 
     init(bundle: String) { self.bundle = bundle }
 
-    /// Re-scan once a second; rebuild the tap when the playing processes or the device change.
+    /// Re-scan once a second; rebuild the tap when the playing processes, the device or its rate change.
     func refresh() {
         let me = getpid()
         let procs = audioProcesses().filter { $0.pid != me && $0.playing && owningApp($0).bundle == bundle }
         let dev = defaultOutputDevice()
-        let sig = procs.map { String($0.objectID) }.sorted().joined(separator: ",") + "@\(dev)"
+        let rate = getValue(dev, kAudioDevicePropertyNominalSampleRate, Float64(0)) ?? 0
+        let sig = procs.map { String($0.objectID) }.sorted().joined(separator: ",") + "@\(dev)/\(Int(rate))"
         guard sig != signature else { return }
         signature = sig
         tap?.close(); tap = nil
